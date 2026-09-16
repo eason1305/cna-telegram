@@ -152,7 +152,9 @@
 | `* * * * *`     | `scan()`   | 掃 1 個 RSS 分類寫入 `seen`，建立「文章 ID → 發稿訊頭」查找表。**不推播** |
 | `*/5 * * * *`   | `discover()` + `drain()` | 抓聚焦清單頁記進 `picked`，然後推播。**唯一會推播的一條** |
 | `0 0 * * *`     | `discover()` | 抓新聞圖表清單頁記進 `picked`。不推播            |
-| `0 0 * * 0`     | `discover()` | 抓特派看世界清單頁記進 `picked`。不推播          |
+| `0 0 * * SUN`   | `discover()` | 抓特派看世界清單頁記進 `picked`。不推播          |
+
+> **星期欄位不要用數字。** Cloudflare 的 weekday 是 `1-7` 而且 **1 = 週日**，與多數 cron 系統（0 = 週日、6 = 週六）不同。寫 `0` 會被 API 直接拒絕（`invalid cron string`，而且部署會停在「triggers 只更新了一部分」的狀態）；更危險的是直覺改成 `7` **不會報錯**，它會安靜地變成每週六執行。用 `SUN` 這種三字母縮寫就沒有這個問題，官方文件也是這樣建議的。
 
 ### 為什麼掃描不能放慢
 
@@ -537,7 +539,7 @@ curl --get "http://localhost:8787/__scheduled" --data-urlencode "cron=0 0 * * *"
 ```
 
 ```bash
-curl --get "http://localhost:8787/__scheduled" --data-urlencode "cron=0 0 * * 0"
+curl --get "http://localhost:8787/__scheduled" --data-urlencode "cron=0 0 * * SUN"
 ```
 
 輸出都是 `Ran scheduled event`，實際結果看 `npm run dev` 那個視窗的日誌。
@@ -1415,8 +1417,15 @@ async function drain(env: Env): Promise<string> {
 const CRON_JOBS: Record<string, { src: SourceKey; drain: boolean }> = {
   "*/5 * * * *": { src: "headlines", drain: true },
   "0 0 * * *": { src: "chart", drain: false }, // UTC 00:00 = 台北 08:00
-  "0 0 * * 0": { src: "world", drain: false }, // 每週日台北 08:00
+  "0 0 * * SUN": { src: "world", drain: false }, // 每週日台北 08:00
 };
+
+/**
+ * 每分鐘那條，對不到 CRON_JOBS 就是它。
+ * 獨立成常數是為了讓「真的對不到任何一條」能被認出來並留下紀錄——
+ * 否則排程字串打錯只會安靜地全部掉進 scan()，那份清單永遠不會被抓。
+ */
+const SCAN_CRON = "* * * * *";
 
 const TEXT_HEADERS = { "content-type": "text/plain; charset=utf-8" };
 
@@ -1428,6 +1437,15 @@ export default {
     ctx: ExecutionContext,
   ): Promise<void> {
     const job = CRON_JOBS[controller.cron];
+
+    // 排程字串必須與 wrangler.jsonc 逐字一致。對不上的話這裡會靜默退回 scan()，
+    // 那份清單就永遠不會被抓而且不會報錯——所以對不上就要留下紀錄。
+    if (!job && controller.cron !== SCAN_CRON) {
+      console.error(
+        `unknown cron "${controller.cron}" — 與 CRON_JOBS 對不上，這次當成 scan 處理`,
+      );
+    }
+
     // waitUntil 讓節流的等待時間不會被提前中斷
     ctx.waitUntil(
       job
@@ -1533,8 +1551,13 @@ Workers 設定檔。**你必須修改 `database_id`**（步驟 5 取得）。
   //   "*/5 * * * *"  聚焦。該頁約每小時更新 2 則，5 分鐘是 24 倍超取樣
   //                  **這是唯一會推播的一條**
   //   "0 0 * * *"    新聞圖表。UTC 00:00 = 台北 08:00。只記錄，不推播
-  //   "0 0 * * 0"    特派看世界。每週日台北 08:00（台灣無日光節約時間，換算固定）
+  //   "0 0 * * SUN"  特派看世界。每週日台北 08:00（台灣無日光節約時間，換算固定）
   //                  只記錄，不推播
+  //
+  // 星期欄位務必用 SUN 這種三字母縮寫，不要用數字。Cloudflare 的 weekday 是
+  // 1-7 而且 **1 = 週日**，與多數 cron 系統（0 = 週日、6 = 週六）不同：
+  // 寫 "0" 會被 API 直接拒絕（invalid cron string），而直覺改成 "7" 不會報錯，
+  // 它會安靜地變成週六。官方文件也建議用縮寫避開這個歧義。
   //
   // 為什麼只有一條推播：週日 UTC 00:00 這四條會同時觸發（0 可被 5 整除）。
   // 「撈出還沒推的 → 送出 → 標記已推」是先查再寫，兩個實例同時跑會各自撈到
@@ -1544,7 +1567,7 @@ Workers 設定檔。**你必須修改 `database_id`**（步驟 5 取得）。
   // 免費方案每帳號最多 5 個 Cron Trigger，這裡用 4 個，保留 1 個餘裕。
   // 要加新 Cron 的話，除非你確定它永遠不會與 "*/5" 同分鐘觸發，否則不要讓它推播。
   "triggers": {
-    "crons": ["* * * * *", "*/5 * * * *", "0 0 * * *", "0 0 * * 0"],
+    "crons": ["* * * * *", "*/5 * * * *", "0 0 * * *", "0 0 * * SUN"],
   },
 
   // D1 資料庫綁定
@@ -1879,7 +1902,10 @@ SEED_ONLY=1
 | `401: Unauthorized`                                       | Token 錯了                      | `npx wrangler secret put TG_TOKEN` 重設                             |
 | `Error 1102 / exceededCpu`                                | 解析超過 10 ms CPU              | 先降 `MAX_ITEMS`（15 → 8）；清單頁那條降不了就升級 $5/月方案        |
 | `Too many subrequests`                                    | 單次觸發超過 50 個 subrequest   | 降低 `MAX_SEND`。注意 **D1 查詢也算 subrequest**，算式見該常數註解  |
+| `invalid cron string: 0 0 * * 0`                          | Cloudflare 的 weekday 是 1-7 且 1 = 週日 | 用 `SUN`，不要用 `0`；也不要改成 `7`，那是週六         |
+| `triggers ... only partially updated`                     | 上一列的連鎖後果：schedules 整批失敗 | 程式碼已上線但排程沒更新，修好 cron 字串後重新部署一次   |
 | `Error 1027`                                              | 超過每日 10 萬次請求            | 這個用途幾乎不可能發生，若發生請檢查是否有人在打你的公開端點        |
+| 某份清單從來沒被抓過                                      | 排程字串與 `CRON_JOBS` 對不上   | `npm run tail` 找 `unknown cron "..."`，把字串改成逐字一致          |
 | `D1_ERROR: no such table: picked`                         | 忘記在正式資料庫建表或跑 migration | 全新環境跑 `schema.sql`；舊版升級跑 `npm run db:migrate`         |
 | `no such column: tries`                                   | 先部署了新版程式才跑 migration  | `npm run db:migrate:002`，順序要反過來                              |
 | `duplicate column name: aid`／`: tries`                   | migration 重複執行              | 正常，代表已經套用過了，忽略即可                                    |
@@ -1946,7 +1972,7 @@ pending SELECT                      1
 3. 在 D1 資料庫頁面的 **Console** 貼上 `schema.sql` 內容執行
 4. 回到 Worker → **Settings** → **Bindings** → **Add** → **D1 database** → 變數名稱填 `DB`，選 `cna`
 5. Worker → **Settings** → **Variables and Secrets** → 新增 `TG_TOKEN`（選 Secret 類型）、`TG_CHAT`、`SEED_ONLY`
-6. Worker → **Settings** → **Triggers** → **Cron Triggers** → **Add** → **四條都要加**：`* * * * *`、`*/5 * * * *`、`0 0 * * *`、`0 0 * * 0`
+6. Worker → **Settings** → **Triggers** → **Cron Triggers** → **Add** → **四條都要加**：`* * * * *`、`*/5 * * * *`、`0 0 * * *`、`0 0 * * SUN`
 7. Worker → **Edit code** → 貼上 `src/index.ts` 內容 → **Deploy**
 
 > 第 6 步的四條字串必須與 `src/index.ts` 裡 `CRON_JOBS` 的 key **逐字一致**，差一個空格就會讓那條排程掉進 `scan()` 分支，清單永遠不會被抓。

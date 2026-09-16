@@ -623,8 +623,15 @@ async function drain(env: Env): Promise<string> {
 const CRON_JOBS: Record<string, { src: SourceKey; drain: boolean }> = {
   "*/5 * * * *": { src: "headlines", drain: true },
   "0 0 * * *": { src: "chart", drain: false }, // UTC 00:00 = 台北 08:00
-  "0 0 * * 0": { src: "world", drain: false }, // 每週日台北 08:00
+  "0 0 * * SUN": { src: "world", drain: false }, // 每週日台北 08:00
 };
+
+/**
+ * 每分鐘那條，對不到 CRON_JOBS 就是它。
+ * 獨立成常數是為了讓「真的對不到任何一條」能被認出來並留下紀錄——
+ * 否則排程字串打錯只會安靜地全部掉進 scan()，那份清單永遠不會被抓。
+ */
+const SCAN_CRON = "* * * * *";
 
 const TEXT_HEADERS = { "content-type": "text/plain; charset=utf-8" };
 
@@ -636,6 +643,15 @@ export default {
     ctx: ExecutionContext,
   ): Promise<void> {
     const job = CRON_JOBS[controller.cron];
+
+    // 排程字串必須與 wrangler.jsonc 逐字一致。對不上的話這裡會靜默退回 scan()，
+    // 那份清單就永遠不會被抓而且不會報錯——所以對不上就要留下紀錄。
+    if (!job && controller.cron !== SCAN_CRON) {
+      console.error(
+        `unknown cron "${controller.cron}" — 與 CRON_JOBS 對不上，這次當成 scan 處理`,
+      );
+    }
+
     // waitUntil 讓節流的等待時間不會被提前中斷
     ctx.waitUntil(
       job
