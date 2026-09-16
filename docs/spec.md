@@ -50,7 +50,7 @@
 
 ## 授權注意事項（請先讀）
 
-中央社 RSS 頁面明文規範：
+中央社 RSS 頁面（<https://www.cna.com.tw/about/rss.aspx>）明文規範：
 
 - 同意 RSS 內容用於**個人、非營利組織之非商業用途**
 - 引用頁面需標示資料出處，文字標示「中央通訊社」
@@ -60,13 +60,38 @@
 
 因此本專案的設計：
 
-- 只推送**標題 + 前言 + 原文連結**，不抓全文
+- 只推送**標題 + 前言 + 首圖 + 原文連結**，不抓全文
 - 訊息結尾固定標註「—— 中央通訊社」
-- 前言原樣保留（含發稿訊頭），不改寫
+- 發稿訊頭原樣保留，不改寫
 - 頻道名稱與簡介請明確標示「**非官方**」，並附上聯絡方式
 - 頻道不得放廣告、不得接贊助、不得做付費訂閱
 
 收到中央社要求停止的通知時，請停用。
+
+### 兩份規範的關係（重要）
+
+中央社文章頁頁尾另有一句全站聲明：
+
+> 本網站之文字、圖片及影音，非經授權，不得轉載、公開播送或公開傳輸及利用。
+
+這兩份文件不衝突，而是**預設禁止 + 具名例外**的關係。頁尾那句是全站 boilerplate；RSS 頁那份是針對 RSS 內容、對個人與非營利用途開出的具體授權，也就是「非經授權」裡的那個**授權**。本專案整個落在例外範圍內。
+
+特別注意 RSS 規範是**正面列舉**可用項目的：「標題、前言、文章連結與首圖連結」。**前言是被列進清單裡的**，不是灰色地帶，沒有必要自我閹割拿掉。反過來說，清單以外的東西一律不能用。
+
+### 為什麼不做 Telegram Instant View
+
+曾評估過替 cna.com.tw 寫 Instant View（IV）template，讓讀者不必開瀏覽器就能原生閱讀。**結論是不做**，理由記錄如下，避免日後重複討論：
+
+- IV 的產物就是**全文**，正是 RSS 規範點名排除的那一項
+- 「全文是 Telegram 伺服器抓的、不是我們抓的」這條防線很弱：template 是我們寫的、`rhash` 連結是我們發的，沒有這兩個動作全文不會以那個形式出現在 Telegram。而且 Telegram 會把渲染結果快取在自己的伺服器上
+- 純超連結在實務上一般認為只是「指引路徑」；IV 把指路變成「換個地方重新上架」，性質不同
+- 效果上，IV 讓這個頻道從「替中央社導流」變成「截流」——沒有他們的廣告、流量統計與版面。這會明顯提高被要求停用的機率
+
+技術上是可行的（IV 官方審核通道雖已停擺多年，但 `t.me/iv?url=...&rhash=...` 這種連結不需審核即可用），**擋住的是授權不是技術**。
+
+替代方案：Telegram 內建瀏覽器本身就支援把任意頁面轉成 reader 版面（開啟連結後 → 瀏覽器設定 → 「Show Instant View」，底層是 Mozilla Readability）。讀者本來就不會離開 Telegram，要 reader 版面多點兩下就有。建議在頻道置頂說明即可。
+
+同理排除用 Telegraph（`telegra.ph`）產生頁面：那是由我們自己抓全文並重製發布，踩線更明確。
 
 ---
 
@@ -149,7 +174,7 @@ GitHub secret scanning 就會發告警信，即使那是假的。）
 
 ```
 本頻道為非官方自動轉發，內容來源為中央通訊社公開 RSS，
-僅提供標題、前言與原文連結。所有著作權歸中央通訊社所有。
+僅提供標題、前言、首圖與原文連結。所有著作權歸中央通訊社所有。
 非營利、無廣告。聯絡：@你的帳號
 ```
 
@@ -386,7 +411,13 @@ npx wrangler d1 execute cna --local --command="DELETE FROM seen"
 curl http://localhost:8787/run
 ```
 
-去頻道確認訊息格式正確、連結可點、沒有亂碼。確認完記得把 `SEED_ONLY` 改回 `1`。
+去頻道確認這幾項，確認完記得把 `SEED_ONLY` 改回 `1`：
+
+- **標題整行可點**（藍色粗體），點下去進得了中央社原文
+- **大圖預覽卡有出真實文章照片**（少數沒配圖的稿會退回中央社的通用圖，正常）
+- **前言只出現一次**——在預覽卡裡。訊息本文只該有標題、發稿訊頭、出處三行
+- 分類 emoji 對得上分類，沒有亂碼
+- 發稿訊頭完整，沒有被截斷
 
 ---
 
@@ -394,19 +425,15 @@ curl http://localhost:8787/run
 
 **這步跳過的話，你的頻道上線瞬間會被幾百則舊新聞洗版，清理很麻煩。**
 
-確認 `wrangler.jsonc` 裡是：
-
-```jsonc
-"vars": {
-  "SEED_ONLY": "1"
-}
-```
-
-部署：
+**不要去改 `wrangler.jsonc`。** 那裡的 `SEED_ONLY` 固定是正式值 `"0"`，灌種用專門的指令以 `--var` 覆蓋：
 
 ```bash
-npm run deploy
+npm run deploy:seed
 ```
+
+（等同 `wrangler deploy --var SEED_ONLY:1`）
+
+> 為什麼不直接改設定檔：改了就得記得改回來。只要忘記一次，之後任何一次不帶 `--var` 的 `npm run deploy` 都會靜默退回灌種模式——頻道停止推播，而且不會報任何錯，你只會發現「怎麼好久沒更新」。用指令覆蓋則是每次部署都必須明確表態。
 
 輸出會顯示你的 Worker 網址，類似：
 
@@ -453,19 +480,13 @@ npm run db:count
 
 ## 步驟 10：正式上線
 
-把 `wrangler.jsonc` 改成：
-
-```jsonc
-"vars": {
-  "SEED_ONLY": "0"
-}
-```
-
-重新部署：
+一樣不動 `wrangler.jsonc`，直接重新部署即可——不帶 `--var` 時就是設定檔裡的正式值 `"0"`：
 
 ```bash
 npm run deploy
 ```
+
+（想講得更明確也可以用 `npm run deploy:prod`，等同 `wrangler deploy --var SEED_ONLY:0`，結果一樣。）
 
 從現在開始，只有**新發布**的稿件會被推送。開著日誌觀察前幾分鐘：
 
@@ -534,7 +555,17 @@ curl https://cna-telegram.<你的子網域>.workers.dev/run
 
 ## 檔案 1：`src/index.ts`
 
-主程式。註解寫的是「為什麼這樣寫」，不只是「做了什麼」——特別是 `parseItems()` 為何用正則而非 XML 解析器、`RE_ITEM.lastIndex = 0` 為何必要、`clean()` 裡 `&amp;` 為何必須放最後。這些是之後你自己改動時最容易踩到的地方。
+主程式。註解寫的是「為什麼這樣寫」，不只是「做了什麼」——特別是 `parseItems()` 為何用正則而非 XML 解析器、`RE_ITEM.lastIndex = 0` 為何必要、`clean()` 裡 `&amp;` 為何必須放最後、為何只取發稿訊頭而把前言交給連結預覽、`href` 為何一定要 `escapeHtml()`。這些是之後你自己改動時最容易踩到的地方。
+
+訊息長這樣（標題整行是超連結，下面接大圖預覽卡）：
+
+```
+💻 泰國專家：AI治理與發展非二選一　應先釐清責任歸屬
+（中央社記者李宗憲曼谷16日專電）
+—— 中央通訊社 · 科技
+```
+
+分類 emoji 對照：🏛️ 政治／🌏 國際／🌊 兩岸／📈 產經／💻 科技／🌿 生活／🚨 社會／📍 地方／🎨 文化／🏅 運動／🎬 娛樂。建議在頻道也置頂一則對照表——11 個 emoji 讀者記不住，所以結尾那行的分類名稱**不要拿掉**，emoji 負責掃視、文字負責消歧義。
 
 ```typescript
 /**
@@ -547,8 +578,15 @@ curl https://cna-telegram.<你的子網域>.workers.dev/run
  *  4. 免費方案每次觸發最多 50 個「外部」subrequest，所以 MAX_SEND 設 20 留餘裕。
  *  5. 去重與並行安全都靠 D1 的 INSERT OR IGNORE 一次解決（原子操作）。
  *
- * 授權注意：只推送標題、前言、原文連結，保留中央社發稿訊頭，標註「中央通訊社」。
+ * 訊息構成（為什麼長這樣）：
+ *  本文只放「分類 emoji + 超連結標題 + 發稿訊頭 + 出處」，前言交給 Telegram 的
+ *  連結預覽卡片。中央社的 og:description 就是 RSS <description> 去掉訊頭，兩邊都放
+ *  等於同一段話讀者要看兩次；而卡片同時帶回首圖（og:image 多為真實文章照片），
+ *  這也是 RSS 授權明列可用的「首圖連結」。
+ *
+ * 授權注意：只推送標題、前言、首圖與原文連結，保留中央社發稿訊頭，標註「中央通訊社」。
  * 中央社 RSS 使用規範限定個人／非營利非商業用途，且禁止引用全文。
+ * 不做 Telegram Instant View：那會讓全文在 Telegram 內重新上架，正是條款排除的那一項。
  */
 
 // ---------------------------------------------------------------------------
@@ -570,8 +608,12 @@ type Item = {
   guid: string;
   title: string;
   link: string;
-  desc: string;
+  /** 中央社發稿訊頭，例：「（中央社記者李宗憲曼谷16日專電）」。抽不出來時為空字串 */
+  head: string;
 };
+
+/** 一個 RSS 分類。emoji 只用於訊息開頭的視覺標記，不影響任何邏輯 */
+type Feed = [category: string, slug: string, emoji: string];
 
 // ---------------------------------------------------------------------------
 // 設定
@@ -582,18 +624,18 @@ type Item = {
  * 不需要的分類請直接刪掉，清單越短，每個分類被輪到的間隔就越短。
  * 目前 11 個分類 + 每分鐘觸發 = 每個分類約 11 分鐘掃一次。
  */
-const FEEDS: [category: string, slug: string][] = [
-  ["政治", "politics"],
-  ["國際", "intworld"],
-  ["兩岸", "mainland"],
-  ["產經", "finance"],
-  ["科技", "technology"],
-  ["生活", "lifehealth"],
-  ["社會", "social"],
-  ["地方", "local"],
-  ["文化", "culture"],
-  ["運動", "sport"],
-  ["娛樂", "stars"],
+const FEEDS: Feed[] = [
+  ["政治", "politics", "🏛️"],
+  ["國際", "intworld", "🌏"],
+  ["兩岸", "mainland", "🌊"], // 海峽的地理意象。刻意不用國旗，那會變成政治表態
+  ["產經", "finance", "📈"],
+  ["科技", "technology", "💻"],
+  ["生活", "lifehealth", "🌿"],
+  ["社會", "social", "🚨"],
+  ["地方", "local", "📍"],
+  ["文化", "culture", "🎨"],
+  ["運動", "sport", "🏅"], // 用獎牌而非單一球類，才涵蓋得住綜合賽事
+  ["娛樂", "stars", "🎬"],
 ];
 
 /** 每輪最多解析幾則 item。調高會增加 CPU 消耗，有撞到 Error 1102 的風險 */
@@ -605,9 +647,6 @@ const MAX_SEND = 20;
 /** 每則之間的間隔（毫秒）。Telegram 頻道大約每分鐘只接受 20 則訊息 */
 const GAP_MS = 3200;
 
-/** 前言最多保留幾個字 */
-const DESC_LIMIT = 450;
-
 // ---------------------------------------------------------------------------
 // 工具函式
 // ---------------------------------------------------------------------------
@@ -618,6 +657,13 @@ const RE_TITLE = /<title[^>]*>([\s\S]*?)<\/title>/;
 const RE_LINK = /<link[^>]*>([\s\S]*?)<\/link>/;
 const RE_GUID = /<guid[^>]*>([\s\S]*?)<\/guid>/;
 const RE_DESC = /<description[^>]*>([\s\S]*?)<\/description>/;
+
+/**
+ * 中央社發稿訊頭。涵蓋「（中央社記者OOO台北16日電）」「（中央社倫敦16日綜合外電報導）」
+ * 等各種變體——共通點是以「（中央社」開頭、到第一個全形右括號為止。
+ * 實測 5 個分類共 100 則，100% 抽得出來。
+ */
+const RE_HEAD = /^（中央社[^）]*）/;
 
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
@@ -668,11 +714,17 @@ function parseItems(xml: string, max: number): Item[] {
     const title = clean(block.match(RE_TITLE)?.[1] ?? "");
     if (!title) continue;
 
+    // 只取訊頭，其餘前言不進訊息本文——Telegram 的連結預覽會從中央社自己的
+    // og:description 顯示同一段前言，兩邊都放等於同一段話讀者要看兩次。
+    // 而訊頭是預覽永遠不會顯示的（中央社產 og:description 時就把它砍掉了），
+    // 所以留訊頭是補上預覽缺的那塊，不是重複。
+    const desc = clean(block.match(RE_DESC)?.[1] ?? "");
+
     out.push({
       guid,
       link,
       title,
-      desc: clean(block.match(RE_DESC)?.[1] ?? "").slice(0, DESC_LIMIT),
+      head: desc.match(RE_HEAD)?.[0] ?? "",
     });
   }
 
@@ -689,13 +741,18 @@ function parseItems(xml: string, max: number): Item[] {
 async function sendMessage(
   env: Env,
   category: string,
+  emoji: string,
   item: Item,
   depth = 0,
 ): Promise<void> {
+  // emoji 放在 <a> 外面：它不是中央社標題的一部分，包進去會被染成連結色，
+  // 也會讓「哪幾個字是標題」變模糊。
+  // href 一定要 escape——clean() 會把 &amp; 還原成裸 &，真的出現在網址裡會讓
+  // Telegram 的 HTML 解析爛掉。目前中央社的 link 都沒有 query string，但這是零成本的保險。
+  // 結尾的「中央通訊社」不能省：授權條款要求以文字標示，訊頭寫的是「中央社」不算數。
   const text =
-    `📰 <b>${escapeHtml(item.title)}</b>\n\n` +
-    `${escapeHtml(item.desc)}\n\n` +
-    `<a href="${item.link}">閱讀全文</a>\n` +
+    `${emoji} <a href="${escapeHtml(item.link)}"><b>${escapeHtml(item.title)}</b></a>\n` +
+    (item.head ? `${escapeHtml(item.head)}\n` : "") +
     `—— 中央通訊社 · ${category}`;
 
   const res = await fetch(
@@ -707,7 +764,13 @@ async function sendMessage(
         chat_id: env.TG_CHAT,
         text,
         parse_mode: "HTML",
-        link_preview_options: { is_disabled: false },
+        // 顯式指定 url，不依賴「訊息文字裡的第一個網址」那套 fallback。
+        // 預覽卡片負責呈現首圖與前言，這兩樣都是 RSS 授權明列可用的項目，
+        // 而且是 Telegram 直接讀中央社自己的 og tag，不經過我們轉手。
+        link_preview_options: {
+          url: item.link,
+          prefer_large_media: true,
+        },
       }),
     },
   );
@@ -719,7 +782,7 @@ async function sendMessage(
     const wait = (body.parameters?.retry_after ?? 5) + 1;
     console.log(`429 rate limited, retry after ${wait}s`);
     await sleep(wait * 1000);
-    return sendMessage(env, category, item, depth + 1);
+    return sendMessage(env, category, emoji, item, depth + 1);
   }
 
   if (!res.ok) {
@@ -734,7 +797,7 @@ async function sendMessage(
 async function run(env: Env): Promise<string> {
   // 依「當前分鐘數」輪詢分類，讓每個分類平均被掃到
   const index = Math.floor(Date.now() / 60_000) % FEEDS.length;
-  const [category, slug] = FEEDS[index];
+  const [category, slug, emoji] = FEEDS[index];
 
   const feedUrl = `https://feeds.feedburner.com/rsscna/${slug}`;
   const res = await fetch(feedUrl, {
@@ -763,7 +826,7 @@ async function run(env: Env): Promise<string> {
     if (sent >= MAX_SEND) break; // 保護 subrequest 額度
 
     try {
-      await sendMessage(env, category, item);
+      await sendMessage(env, category, emoji, item);
       sent++;
       await sleep(GAP_MS);
     } catch (err) {
@@ -866,8 +929,12 @@ export default {
   // 非敏感的環境變數（敏感的請用 wrangler secret put）
   // SEED_ONLY = "1" → 只寫入去重資料庫、不推播，用於首次上線灌種
   // SEED_ONLY = "0" → 正常推播
+  //
+  // 這裡固定放正式值 "0"。灌種請用 `npm run deploy:seed`（以 --var 覆蓋成 "1"），
+  // 不要把預設值改回 "1"：那樣之後任何一次不帶 --var 的 `npm run deploy`
+  // 都會靜默退回灌種模式，頻道停止推播而且不會報錯。
   "vars": {
-    "SEED_ONLY": "1",
+    "SEED_ONLY": "0",
   },
 
   // 開啟可觀測性，這樣 dashboard 的 Logs 才看得到 console.log 輸出
@@ -919,6 +986,8 @@ CREATE INDEX IF NOT EXISTS seen_cat_ts ON seen (cat, ts);
   "scripts": {
     "dev": "wrangler dev --test-scheduled",
     "deploy": "wrangler deploy",
+    "deploy:seed": "wrangler deploy --var SEED_ONLY:1",
+    "deploy:prod": "wrangler deploy --var SEED_ONLY:0",
     "tail": "wrangler tail",
     "db:init": "wrangler d1 execute cna --remote --file=./schema.sql",
     "db:init:local": "wrangler d1 execute cna --local --file=./schema.sql",
@@ -928,7 +997,7 @@ CREATE INDEX IF NOT EXISTS seen_cat_ts ON seen (cat, ts);
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20260801.0",
+    "@cloudflare/workers-types": "^5.20260801.1",
     "typescript": "^5.6.0",
     "wrangler": "^4.0.0"
   }
@@ -1014,7 +1083,10 @@ SEED_ONLY=1
 | 訊息出現 `&amp;` 之類的字                                 | 實體字元處理順序問題            | 檢查 `clean()` 裡 `&amp;` 是否放在最後一個 replace                  |
 | 訊息推了但格式跑掉                                        | 標題含 `<` `>` 等字元           | 確認 `escapeHtml()` 有被套用                                        |
 | 完全沒有任何日誌                                          | Cron 沒生效                     | Dashboard → Settings → Triggers 確認；或 `wrangler deploy` 重新部署 |
-| 頻道被洗版                                                | 忘記灌種                        | 刪除頻道訊息，`SEED_ONLY=1` 重新灌種                                |
+| 頻道被洗版                                                | 忘記灌種                        | 刪除頻道訊息，`npm run deploy:seed` 重新灌種                        |
+| 同一段前言出現兩次                                        | 本文又放了完整 `description`    | `parseItems()` 應只取 `RE_HEAD` 抽出的訊頭，前言交給預覽卡          |
+| 沒有預覽卡，訊息只剩標題和訊頭                            | Telegram 抓不到中央社的 og tag  | 多半是暫時性（卡片有快取）；持續發生檢查 `link_preview_options.url` |
+| 標題點不動                                                | 標題沒被 `<a>` 包住             | 檢查 `sendMessage()` 的 `text`，emoji 要在 `<a>` **外面**           |
 
 ---
 
