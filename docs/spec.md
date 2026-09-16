@@ -121,11 +121,14 @@ node -v     # 應顯示 v20.x 或更高
 3. 依提示輸入：
    - **顯示名稱**：例如 `中央社新聞（非官方）`
    - **使用者名稱**：必須以 `bot` 結尾，例如 `cna_unofficial_bot`
-4. BotFather 會回給你一串 token，長這樣：
+4. BotFather 會回給你一串 token，格式是「數字 + 冒號 + 一長串英數字」：
 
 ```
-8123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw
+<8~10 位數字>:<35 碼英數字、底線或減號>
 ```
+
+（這裡刻意不放完整範例字串。只要文件裡出現長得像真 token 的東西，
+GitHub secret scanning 就會發告警信，即使那是假的。）
 
 **這串就是密碼，拿到就能完全控制你的 bot。先存在密碼管理員裡，步驟 7 要用。**
 
@@ -984,7 +987,8 @@ dist/
 # 注意：這個檔案只在 `wrangler dev` 本機執行時生效，
 #       部署到正式環境的機密要用 `wrangler secret put` 設定。
 
-TG_TOKEN=123456789:AAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+# TG_TOKEN 格式為 <8~10 位數字>:<35 碼英數字>，此處刻意留空避免觸發 secret scanning
+TG_TOKEN=
 TG_CHAT=@your_channel_name
 SEED_ONLY=1
 ```

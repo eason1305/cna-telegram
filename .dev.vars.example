@@ -3,6 +3,7 @@
 # 注意：這個檔案只在 `wrangler dev` 本機執行時生效，
 #       部署到正式環境的機密要用 `wrangler secret put` 設定。
 
-TG_TOKEN=123456789:AAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+# TG_TOKEN 格式為 <8~10 位數字>:<35 碼英數字>，此處刻意留空避免觸發 secret scanning
+TG_TOKEN=
 TG_CHAT=@your_channel_name
 SEED_ONLY=1
