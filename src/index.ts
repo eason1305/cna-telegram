@@ -1,9 +1,15 @@
 /**
  * 中央社新聞 → Telegram 頻道（非官方）
  *
+ * 推播對象不是全部新聞，而是中央社編輯部自己挑進版面的三份清單：
+ * 聚焦、新聞圖表、特派看世界。程式不判斷新聞價值，只做同步。
+ * 這是刻意的取捨——自行用關鍵字評分試過，中文沒有詞界會把「陸軍演練」誤判成「軍演」，
+ * 也讀不出「對台灣無直接影響」的否定語意，不如直接沿用中央社的編輯判斷。
+ *
  * 設計重點（對應 Cloudflare Workers Free 方案的限制）：
- *  1. 免費方案每次 Cron 觸發只有 10 ms CPU time，所以每輪只處理「一個」分類的 feed。
- *  2. 用正則抽取而非完整 XML 解析器，省 CPU、也省 bundle 體積（免費上限 3 MB）。
+ *  1. 免費方案每次 Cron 觸發只有 10 ms CPU time，所以掃描與推播拆成不同 Cron：
+ *     掃描那條做 XML 解析但不推播，推播那幾條完全不碰 XML。
+ *  2. 用正則抽取而非完整 XML／HTML 解析器，省 CPU、也省 bundle 體積（免費上限 3 MB）。
  *  3. 等待網路與 sleep 不計入 CPU time，所以節流可以放心慢慢送。
  *  4. 免費方案每次觸發最多 50 個「外部」subrequest，所以 MAX_SEND 設 20 留餘裕。
  *  5. 去重與並行安全都靠 D1 的 INSERT OR IGNORE 一次解決（原子操作）。
@@ -13,6 +19,10 @@
  *  連結預覽卡片。中央社的 og:description 就是 RSS <description> 去掉訊頭，兩邊都放
  *  等於同一段話讀者要看兩次；而卡片同時帶回首圖（og:image 多為真實文章照片），
  *  這也是 RSS 授權明列可用的「首圖連結」。
+ *
+ * 內容來源的界線：
+ *  清單頁只用來決定「推哪幾則」，訊息本文的文字一律取自 RSS feed，
+ *  任何情況下都不抓文章內頁。特稿系列不進 RSS、查不到訊頭時就少一行，不另尋來源。
  *
  * 授權注意：只推送標題、前言、首圖與原文連結，保留中央社發稿訊頭，標註「中央通訊社」。
  * 中央社 RSS 使用規範限定個人／非營利非商業用途，且禁止引用全文。
@@ -30,43 +40,100 @@ export interface Env {
   TG_TOKEN: string;
   /** 目標頻道，公開頻道用 "@channel_name"，私人頻道用 "-100xxxxxxxxxx" */
   TG_CHAT: string;
-  /** "1" = 只寫入去重資料庫、不實際推播（首次上線灌種用） */
+  /** "1" = 只寫入資料庫、不實際推播（首次上線灌種用） */
   SEED_ONLY: string;
 }
 
 type Item = {
   guid: string;
+  /** 12 位文章 ID，與編輯清單頁對接的唯一鍵 */
+  aid: string;
   title: string;
   link: string;
   /** 中央社發稿訊頭，例：「（中央社記者李宗憲曼谷16日專電）」。抽不出來時為空字串 */
   head: string;
 };
 
-/** 一個 RSS 分類。emoji 只用於訊息開頭的視覺標記，不影響任何邏輯 */
-type Feed = [category: string, slug: string, emoji: string];
+/** 編輯清單頁上的一則新聞 */
+type Pick = {
+  aid: string;
+  /** 網址裡的分類代碼 aipl / aopl / acn … */
+  slug: string;
+  title: string;
+  url: string;
+  pubAt: number | null;
+};
+
+/** 準備送往 Telegram 的一則訊息 */
+type Outgoing = {
+  emoji: string;
+  title: string;
+  link: string;
+  head: string;
+  category: string;
+  /** 來源標記，例「📊 新聞圖表」。聚焦為空字串 */
+  tag: string;
+};
+
+/**
+ * 一個 RSS 分類。
+ * emoji 只用於訊息開頭的視覺標記，不影響任何邏輯。
+ * urlSlug 是中央社網址裡的分類代碼，編輯清單頁只給網址不給分類名稱，
+ * 要靠它還原成分類與 emoji——放在同一個元組裡才不會跟上面兩欄各自漂移。
+ */
+type Feed = [
+  category: string,
+  slug: string,
+  emoji: string,
+  urlSlug: string,
+];
+
+type SourceKey = "headlines" | "chart" | "world";
 
 // ---------------------------------------------------------------------------
 // 設定
 // ---------------------------------------------------------------------------
 
 /**
- * 中央社 RSS 分類。
- * 不需要的分類請直接刪掉，清單越短，每個分類被輪到的間隔就越短。
- * 目前 11 個分類 + 每分鐘觸發 = 每個分類約 11 分鐘掃一次。
+ * 中央社 RSS 分類。這 11 個是官方 /about/rss.aspx 提供的全部 feed，
+ * 沒有「聚焦」之類的編輯清單 feed，所以那三份清單只能從網頁取得。
+ *
+ * 掃描這些 feed 的唯一目的是建立「文章 ID → 發稿訊頭」查找表，本身不推播任何東西。
+ * urlSlug 對應關係由 208 筆 RSS 實際資料反推，11 對 11 一對一。
  */
 const FEEDS: Feed[] = [
-  ["政治", "politics", "🏛️"],
-  ["國際", "intworld", "🌏"],
-  ["兩岸", "mainland", "🌊"], // 海峽的地理意象。刻意不用國旗，那會變成政治表態
-  ["產經", "finance", "📈"],
-  ["科技", "technology", "💻"],
-  ["生活", "lifehealth", "🌿"],
-  ["社會", "social", "🚨"],
-  ["地方", "local", "📍"],
-  ["文化", "culture", "🎨"],
-  ["運動", "sport", "🏅"], // 用獎牌而非單一球類，才涵蓋得住綜合賽事
-  ["娛樂", "stars", "🎬"],
+  ["政治", "politics", "🏛️", "aipl"],
+  ["國際", "intworld", "🌏", "aopl"],
+  ["兩岸", "mainland", "🌊", "acn"], // 海峽的地理意象。刻意不用國旗，那會變成政治表態
+  ["產經", "finance", "📈", "afe"],
+  ["科技", "technology", "💻", "ait"],
+  ["生活", "lifehealth", "🌿", "ahel"],
+  ["社會", "social", "🚨", "asoc"],
+  ["地方", "local", "📍", "aloc"],
+  ["文化", "culture", "🎨", "acul"],
+  ["運動", "sport", "🏅", "aspt"], // 用獎牌而非單一球類，才涵蓋得住綜合賽事
+  ["娛樂", "stars", "🎬", "amov"],
 ];
+
+/** urlSlug → Feed。由 FEEDS 直接導出，確保只有一份真相 */
+const BY_URL_SLUG = new Map(FEEDS.map((f) => [f[3], f]));
+
+/**
+ * 三份編輯清單。三者的 HTML 結構完全相同，所以這裡只是資料，不是三份程式碼。
+ * tag 會加在訊息結尾：圖表稿與特稿跟文字稿是各自獨立的文章、各有各的 ID，
+ * 去重擋不住「同事件不同文章」，標記能讓它讀起來是補充版本而不是系統推了兩次。
+ */
+const SOURCES: Record<SourceKey, { url: string; tag: string }> = {
+  headlines: { url: "https://www.cna.com.tw/list/headlines.aspx", tag: "" },
+  chart: {
+    url: "https://www.cna.com.tw/topic/newstopic/4479.aspx",
+    tag: "📊 新聞圖表",
+  },
+  world: {
+    url: "https://www.cna.com.tw/topic/newstopic/4215.aspx",
+    tag: "🌍 特派看世界",
+  },
+};
 
 /** 每輪最多解析幾則 item。調高會增加 CPU 消耗，有撞到 Error 1102 的風險 */
 const MAX_ITEMS = 15;
@@ -76,6 +143,18 @@ const MAX_SEND = 20;
 
 /** 每則之間的間隔（毫秒）。Telegram 頻道大約每分鐘只接受 20 則訊息 */
 const GAP_MS = 3200;
+
+/** 查不到訊頭時，最多等多久讓 RSS 掃描補上（每個分類 11 分鐘會輪到一次） */
+const WAIT_MS = 30 * 60_000;
+
+/**
+ * 流水號 >= 此值者為特稿／專欄系列，永遠不會出現在即時新聞 RSS 裡。
+ * 實證：連續兩天每分鐘掃描累積 505 篇 RSS 文章，3xxx 系列 0 篇。
+ * 這條界線讓特稿不必白等 WAIT_MS——否則每週只跑一次的特派會被延後整整一週。
+ */
+const FEATURE_SEQ = 3000;
+
+const UA = "cna-unofficial-telegram/1.0";
 
 // ---------------------------------------------------------------------------
 // 工具函式
@@ -95,6 +174,16 @@ const RE_DESC = /<description[^>]*>([\s\S]*?)<\/description>/;
  */
 const RE_HEAD = /^（中央社[^）]*）/;
 
+/**
+ * 編輯清單頁用。
+ * href 這條同時扮演白名單：只有正規新聞稿的網址長這樣，影音（連 YouTube）、
+ * 專題、圖輯都不符合而被跳過。用白名單而非黑名單，日後頁面夾帶新型態連結時
+ * 預設行為是安全的。
+ */
+const RE_HREF = /href="\/news\/([a-z]+)\/(\d{12})\.aspx"/;
+const RE_H2 = /<h2[^>]*>([\s\S]*?)<\/h2>/;
+const RE_DATETIME = /datetime="([^"]+)"/;
+
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -103,9 +192,9 @@ const escapeHtml = (s: string): string =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
 /**
- * 清理 RSS 欄位內容：
+ * 清理 RSS／HTML 欄位內容：
  *  - 剝掉 <![CDATA[ ... ]]> 外殼
- *  - 移除殘留的 HTML 標籤
+ *  - 移除殘留的 HTML 標籤（清單頁的標題包在 <span> 裡，靠這步剝掉）
  *  - 還原常見的 XML 實體字元（&amp; 要放最後，否則會二次還原出錯）
  */
 function clean(raw: string): string {
@@ -122,6 +211,15 @@ function clean(raw: string): string {
     .replace(/\s+/g, " ")
     .trim();
 }
+
+/** 從 guid 或連結取出 12 位文章 ID，這是與編輯清單頁對接的唯一鍵 */
+function extractAid(guid: string, link: string): string {
+  return (guid.match(/(\d{12})$/) ?? link.match(/\/(\d{12})\.aspx/))?.[1] ?? "";
+}
+
+/** 文章 ID 末 4 碼是當日流水號，用來分辨即時新聞（0xxx）與特稿（3xxx 以上） */
+const isFeature = (aid: string): boolean =>
+  Number(aid.slice(-4)) >= FEATURE_SEQ;
 
 /**
  * 從 RSS 原始字串抽出前 max 則項目。
@@ -152,9 +250,50 @@ function parseItems(xml: string, max: number): Item[] {
 
     out.push({
       guid,
+      aid: extractAid(guid, link),
       link,
       title,
       head: desc.match(RE_HEAD)?.[0] ?? "",
+    });
+  }
+
+  return out;
+}
+
+/**
+ * 從編輯清單頁的 HTML 抽出文章清單。三份清單共用這一份解析器。
+ *
+ * 先用 indexOf 把約 8 KB 的清單區段切出來再跑正則——整頁有 113～118 KB，
+ * 直接對全文跑正則會有撞上 10 ms CPU 上限的風險。
+ *
+ * 回傳空陣列代表頁面結構可能已變更（找不到 jsMainList），呼叫端必須記錄，
+ * 否則頻道會靜默停止更新而無人察覺。
+ */
+function parseList(html: string): Pick[] {
+  const start = html.indexOf('id="jsMainList"');
+  if (start < 0) return [];
+  const end = html.indexOf("</ul>", start);
+  if (end < 0) return [];
+
+  const out: Pick[] = [];
+  // 以 <li> 切塊而非用一條長正則跨欄位比對：清單頁夾雜影音等異質項目時，
+  // 切塊能保證標題與連結必定來自同一個 <li>，不會張冠李戴。
+  for (const li of html.slice(start, end).split("<li>").slice(1)) {
+    const href = li.match(RE_HREF);
+    if (!href) continue; // 白名單：非正規新聞稿一律跳過
+
+    const title = clean(li.match(RE_H2)?.[1] ?? "");
+    if (!title) continue;
+
+    const dt = li.match(RE_DATETIME)?.[1];
+    const pubAt = dt ? Date.parse(dt) : NaN;
+
+    out.push({
+      aid: href[2],
+      slug: href[1],
+      title,
+      url: `https://www.cna.com.tw/news/${href[1]}/${href[2]}.aspx`,
+      pubAt: Number.isNaN(pubAt) ? null : pubAt,
     });
   }
 
@@ -167,23 +306,20 @@ function parseItems(xml: string, max: number): Item[] {
 
 /**
  * 送出一則訊息。遇到 429（速率限制）會依 Telegram 指示的秒數退避後重試，最多兩次。
+ *
+ * head 可能是空字串：特稿系列不進 RSS，永遠抽不到訊頭。這種情況只是少一行，
+ * 預覽卡片仍會從 og tag 帶回摘要與首圖，訊息依然完整可讀。
  */
-async function sendMessage(
-  env: Env,
-  category: string,
-  emoji: string,
-  item: Item,
-  depth = 0,
-): Promise<void> {
+async function sendMessage(env: Env, msg: Outgoing, depth = 0): Promise<void> {
   // emoji 放在 <a> 外面：它不是中央社標題的一部分，包進去會被染成連結色，
   // 也會讓「哪幾個字是標題」變模糊。
   // href 一定要 escape——clean() 會把 &amp; 還原成裸 &，真的出現在網址裡會讓
   // Telegram 的 HTML 解析爛掉。目前中央社的 link 都沒有 query string，但這是零成本的保險。
   // 結尾的「中央通訊社」不能省：授權條款要求以文字標示，訊頭寫的是「中央社」不算數。
   const text =
-    `${emoji} <a href="${escapeHtml(item.link)}"><b>${escapeHtml(item.title)}</b></a>\n` +
-    (item.head ? `${escapeHtml(item.head)}\n` : "") +
-    `—— 中央通訊社 · ${category}`;
+    `${msg.emoji} <a href="${escapeHtml(msg.link)}"><b>${escapeHtml(msg.title)}</b></a>\n` +
+    (msg.head ? `${escapeHtml(msg.head)}\n` : "") +
+    `—— 中央通訊社 · ${msg.category}${msg.tag ? ` · ${msg.tag}` : ""}`;
 
   const res = await fetch(
     `https://api.telegram.org/bot${env.TG_TOKEN}/sendMessage`,
@@ -198,7 +334,7 @@ async function sendMessage(
         // 預覽卡片負責呈現首圖與前言，這兩樣都是 RSS 授權明列可用的項目，
         // 而且是 Telegram 直接讀中央社自己的 og tag，不經過我們轉手。
         link_preview_options: {
-          url: item.link,
+          url: msg.link,
           prefer_large_media: true,
         },
       }),
@@ -212,7 +348,7 @@ async function sendMessage(
     const wait = (body.parameters?.retry_after ?? 5) + 1;
     console.log(`429 rate limited, retry after ${wait}s`);
     await sleep(wait * 1000);
-    return sendMessage(env, category, emoji, item, depth + 1);
+    return sendMessage(env, msg, depth + 1);
   }
 
   if (!res.ok) {
@@ -221,17 +357,23 @@ async function sendMessage(
 }
 
 // ---------------------------------------------------------------------------
-// 主流程
+// 掃描：建立「文章 ID → 發稿訊頭」查找表
 // ---------------------------------------------------------------------------
 
-async function run(env: Env): Promise<string> {
-  // 依「當前分鐘數」輪詢分類，讓每個分類平均被掃到
+/**
+ * 每分鐘輪詢一個 RSS 分類，把看到的新聞全部寫進 seen。**不推播任何東西。**
+ *
+ * 這是整套機制的前置作業：RSS feed 只保留 4～5 小時（實測國際／產經／生活為
+ * 4.1～4.5 小時），而編輯清單每天／每週才檢查一次，推播當下再去抓 feed 一定來不及。
+ * 所以訊頭必須在這裡就落地保存。
+ */
+async function scan(env: Env): Promise<string> {
+  // 依「當前分鐘數」輪詢分類，讓每個分類平均被掃到（11 分類 → 每 11 分鐘一輪）
   const index = Math.floor(Date.now() / 60_000) % FEEDS.length;
-  const [category, slug, emoji] = FEEDS[index];
+  const [category, slug] = FEEDS[index];
 
-  const feedUrl = `https://feeds.feedburner.com/rsscna/${slug}`;
-  const res = await fetch(feedUrl, {
-    headers: { "user-agent": "cna-unofficial-telegram/1.0" },
+  const res = await fetch(`https://feeds.feedburner.com/rsscna/${slug}`, {
+    headers: { "user-agent": UA },
   });
 
   if (!res.ok) {
@@ -239,37 +381,154 @@ async function run(env: Env): Promise<string> {
     return `${category}: feed error ${res.status}`;
   }
 
-  const items = parseItems(await res.text(), MAX_ITEMS).reverse(); // 舊 → 新，時序才對
+  const items = parseItems(await res.text(), MAX_ITEMS);
+  if (!items.length) {
+    console.error(`feed ${slug}: parsed 0 items`);
+    return `${category}: parsed 0`;
+  }
+
+  // 用 batch 一次送出，省下十幾次來回。INSERT OR IGNORE 的原子去重不受影響。
+  const now = Date.now();
+  const stmt = env.DB.prepare(
+    "INSERT OR IGNORE INTO seen (guid, aid, cat, title, link, head, ts) VALUES (?, ?, ?, ?, ?, ?, ?)",
+  );
+  const results = await env.DB.batch(
+    items.map((i) =>
+      stmt.bind(i.guid, i.aid, category, i.title, i.link, i.head, now),
+    ),
+  );
+  const added = results.reduce((n, r) => n + (r.meta.changes ?? 0), 0);
+
+  const msg = `${category}: parsed ${items.length}, new ${added}`;
+  console.log(msg);
+  return msg;
+}
+
+// ---------------------------------------------------------------------------
+// 推播：依編輯清單決定推哪幾則
+// ---------------------------------------------------------------------------
+
+type PendingRow = {
+  aid: string;
+  source: string;
+  slug: string;
+  title: string;
+  url: string;
+  pub_at: number | null;
+  rss_title: string | null;
+  head: string | null;
+};
+
+/**
+ * 抓一份編輯清單，把沒推過的項目送出去。
+ *
+ * 去重完全靠 picked.aid 主鍵 + INSERT OR IGNORE，不使用任何時間窗：
+ *  - 三份清單共用 picked 表，同一篇文章不論被哪份先看到都只會推一次
+ *  - 某次執行失敗時漏掉的項目下次自動補上，不會永久遺失
+ * 後者對每天／每週才跑一次的圖表與特派特別重要——用「過去 24 小時」這類條件的話，
+ * 一次失敗就是永久漏稿。
+ */
+async function pushList(env: Env, key: SourceKey): Promise<string> {
+  const src = SOURCES[key];
+
+  const res = await fetch(src.url, { headers: { "user-agent": UA } });
+  if (!res.ok) {
+    console.error(`${key}: page returned ${res.status}`);
+    return `${key}: page error ${res.status}`;
+  }
+
+  const picks = parseList(await res.text());
+  if (!picks.length) {
+    // 本方案最可能的長期故障模式：頁面改版後 jsMainList 消失，
+    // 解析回傳 0 則卻不會拋錯，頻道就此安靜。必須留下痕跡才看得見。
+    console.error(`${key}: parsed 0 items — 清單頁結構可能已變更`);
+    return `${key}: parsed 0 (structure changed?)`;
+  }
+
   const seedOnly = env.SEED_ONLY === "1";
+  const now = Date.now();
+
+  // 灌種模式直接把 pushed_at 填成現在，等於「記錄下來但視為已推」。
+  // 首次上線時三份清單合計約 60 則（圖表橫跨 50 天、特派橫跨 88 天），
+  // 少了這步會在上線瞬間全部推出。
+  const ins = env.DB.prepare(
+    "INSERT OR IGNORE INTO picked (aid, source, slug, title, url, pub_at, found_at, pushed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+  );
+  await env.DB.batch(
+    picks.map((p) =>
+      ins.bind(
+        p.aid,
+        key,
+        p.slug,
+        p.title,
+        p.url,
+        p.pubAt,
+        now,
+        seedOnly ? now : null,
+      ),
+    ),
+  );
+
+  if (seedOnly) {
+    const msg = `${key}: parsed ${picks.length}, sent 0 (seed mode)`;
+    console.log(msg);
+    return msg;
+  }
+
+  // found_at 相同（同一批）時再依 pub_at 排，讓同批的多則在頻道上維持發稿時序
+  const pending = await env.DB.prepare(
+    `SELECT p.aid, p.source, p.slug, p.title, p.url, p.pub_at,
+            s.title AS rss_title, s.head AS head
+       FROM picked p
+       LEFT JOIN seen s ON s.aid = p.aid
+      WHERE p.pushed_at IS NULL
+      ORDER BY p.found_at, p.pub_at
+      LIMIT ?`,
+  )
+    .bind(MAX_SEND)
+    .all<PendingRow>();
+
   let sent = 0;
+  let waiting = 0;
 
-  for (const item of items) {
-    // 原子去重：不存在才寫入。changes === 0 表示這則已經處理過
-    const insert = await env.DB.prepare(
-      "INSERT OR IGNORE INTO seen (guid, cat, title, ts) VALUES (?, ?, ?, ?)",
-    )
-      .bind(item.guid, category, item.title, Date.now())
-      .run();
+  for (const row of pending.results) {
+    const head = row.head ?? "";
 
-    if (!insert.meta.changes) continue; // 推播過了
-    if (seedOnly) continue; // 灌種模式：只記錄不推播
-    if (sent >= MAX_SEND) break; // 保護 subrequest 額度
+    // 查不到訊頭時要不要再等一輪？特稿不必等，它永遠不會進 RSS。
+    // 即時新聞則可能只是剛發布、RSS 還沒輪到，值得等下一輪。
+    if (!head && !isFeature(row.aid)) {
+      const age = row.pub_at === null ? Infinity : now - row.pub_at;
+      if (age < WAIT_MS) {
+        waiting++;
+        continue;
+      }
+    }
+
+    const feed = BY_URL_SLUG.get(row.slug);
 
     try {
-      await sendMessage(env, category, emoji, item);
+      await sendMessage(env, {
+        emoji: feed?.[2] ?? "📰",
+        // 標題優先用 RSS 的版本（與 feed 一致），查不到才用清單頁上的
+        title: row.rss_title || row.title,
+        link: row.url,
+        head,
+        category: feed?.[0] ?? "新聞",
+        tag: SOURCES[row.source as SourceKey]?.tag ?? "",
+      });
+      // 送出成功才標記。失敗時 pushed_at 維持 NULL，下一輪自動重試，不會靜默漏稿。
+      await env.DB.prepare("UPDATE picked SET pushed_at = ? WHERE aid = ?")
+        .bind(Date.now(), row.aid)
+        .run();
       sent++;
       await sleep(GAP_MS);
     } catch (err) {
-      // 送失敗就把去重紀錄收回，下一輪會重試，避免靜默漏稿
-      await env.DB.prepare("DELETE FROM seen WHERE guid = ?")
-        .bind(item.guid)
-        .run();
       console.error(`send failed: ${String(err)}`);
       break; // 通常是 token 或頻道權限問題，繼續送只會連錯
     }
   }
 
-  const msg = `${category}: parsed ${items.length}, sent ${sent}${seedOnly ? " (seed mode)" : ""}`;
+  const msg = `${key}: parsed ${picks.length}, sent ${sent}${waiting ? `, waiting ${waiting}` : ""}`;
   console.log(msg);
   return msg;
 }
@@ -278,15 +537,28 @@ async function run(env: Env): Promise<string> {
 // Worker 入口
 // ---------------------------------------------------------------------------
 
+/**
+ * Cron 排程字串 → 要跑哪份清單。字串必須與 wrangler.jsonc 的 crons 完全一致。
+ * 沒對應到的（也就是每分鐘那條）一律跑 scan。
+ */
+const CRON_JOBS: Record<string, SourceKey> = {
+  "*/5 * * * *": "headlines",
+  "0 0 * * *": "chart", // UTC 00:00 = 台北 08:00
+  "0 0 * * 0": "world", // 每週日台北 08:00
+};
+
+const TEXT_HEADERS = { "content-type": "text/plain; charset=utf-8" };
+
 export default {
   /** Cron 排程觸發 */
   async scheduled(
-    _controller: ScheduledController,
+    controller: ScheduledController,
     env: Env,
     ctx: ExecutionContext,
   ): Promise<void> {
+    const job = CRON_JOBS[controller.cron];
     // waitUntil 讓節流的等待時間不會被提前中斷
-    ctx.waitUntil(run(env));
+    ctx.waitUntil(job ? pushList(env, job) : scan(env));
   },
 
   /** HTTP 入口：手動觸發與健康檢查 */
@@ -294,25 +566,43 @@ export default {
     const url = new URL(request.url);
 
     if (url.pathname === "/run") {
-      const result = await run(env);
-      return new Response(result, {
-        headers: { "content-type": "text/plain; charset=utf-8" },
+      return new Response(await scan(env), { headers: TEXT_HEADERS });
+    }
+
+    if (url.pathname === "/pick") {
+      const src = url.searchParams.get("src") ?? "headlines";
+      if (!(src in SOURCES)) {
+        return new Response(
+          `unknown src: ${src}\n可用值: ${Object.keys(SOURCES).join(", ")}`,
+          { status: 400, headers: TEXT_HEADERS },
+        );
+      }
+      return new Response(await pushList(env, src as SourceKey), {
+        headers: TEXT_HEADERS,
       });
     }
 
     if (url.pathname === "/stats") {
       const row = await env.DB.prepare(
-        "SELECT COUNT(*) AS n, MAX(ts) AS latest FROM seen",
-      ).first<{ n: number; latest: number | null }>();
+        `SELECT COUNT(*) AS tracked,
+                SUM(CASE WHEN pushed_at IS NOT NULL THEN 1 ELSE 0 END) AS pushed,
+                MAX(pushed_at) AS latest
+           FROM picked`,
+      ).first<{ tracked: number; pushed: number | null; latest: number | null }>();
+      const bySource = await env.DB.prepare(
+        "SELECT source, COUNT(*) AS n FROM picked WHERE pushed_at IS NOT NULL GROUP BY source",
+      ).all<{ source: string; n: number }>();
+
       return Response.json({
-        total: row?.n ?? 0,
+        tracked: row?.tracked ?? 0,
+        pushed: row?.pushed ?? 0,
         latest: row?.latest ? new Date(row.latest).toISOString() : null,
-        categories: FEEDS.length,
+        bySource: Object.fromEntries(
+          bySource.results.map((r) => [r.source, r.n]),
+        ),
       });
     }
 
-    return new Response("alive", {
-      headers: { "content-type": "text/plain; charset=utf-8" },
-    });
+    return new Response("alive", { headers: TEXT_HEADERS });
   },
 };

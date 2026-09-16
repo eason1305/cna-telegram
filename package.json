@@ -10,8 +10,11 @@
     "tail": "wrangler tail",
     "db:init": "wrangler d1 execute cna --remote --file=./schema.sql",
     "db:init:local": "wrangler d1 execute cna --local --file=./schema.sql",
-    "db:count": "wrangler d1 execute cna --remote --command=\"SELECT cat, COUNT(*) AS n FROM seen GROUP BY cat ORDER BY n DESC\"",
-    "db:recent": "wrangler d1 execute cna --remote --command=\"SELECT datetime(ts/1000,'unixepoch','+8 hours') AS t, cat, title FROM seen ORDER BY ts DESC LIMIT 10\"",
+    "db:migrate": "wrangler d1 execute cna --remote --file=./migrations/001_picked.sql",
+    "db:migrate:local": "wrangler d1 execute cna --local --file=./migrations/001_picked.sql",
+    "db:count": "wrangler d1 execute cna --remote --command=\"SELECT source, COUNT(*) AS n, SUM(CASE WHEN pushed_at IS NULL THEN 1 ELSE 0 END) AS pending FROM picked GROUP BY source ORDER BY n DESC\"",
+    "db:recent": "wrangler d1 execute cna --remote --command=\"SELECT datetime(pushed_at/1000,'unixepoch','+8 hours') AS t, source, slug, title FROM picked WHERE pushed_at IS NOT NULL ORDER BY pushed_at DESC LIMIT 10\"",
+    "db:nohead": "wrangler d1 execute cna --remote --command=\"SELECT p.source, COUNT(*) AS n FROM picked p LEFT JOIN seen s ON s.aid=p.aid WHERE p.pushed_at IS NOT NULL AND (s.head IS NULL OR s.head='') GROUP BY p.source\"",
     "db:purge": "wrangler d1 execute cna --remote --command=\"DELETE FROM seen WHERE ts < (unixepoch()-7776000)*1000\"",
     "typecheck": "tsc --noEmit"
   },
