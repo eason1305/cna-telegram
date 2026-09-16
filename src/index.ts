@@ -8,8 +8,15 @@
  *  4. 免費方案每次觸發最多 50 個「外部」subrequest，所以 MAX_SEND 設 20 留餘裕。
  *  5. 去重與並行安全都靠 D1 的 INSERT OR IGNORE 一次解決（原子操作）。
  *
- * 授權注意：只推送標題、前言、原文連結，保留中央社發稿訊頭，標註「中央通訊社」。
+ * 訊息構成（為什麼長這樣）：
+ *  本文只放「分類 emoji + 超連結標題 + 發稿訊頭 + 出處」，前言交給 Telegram 的
+ *  連結預覽卡片。中央社的 og:description 就是 RSS <description> 去掉訊頭，兩邊都放
+ *  等於同一段話讀者要看兩次；而卡片同時帶回首圖（og:image 多為真實文章照片），
+ *  這也是 RSS 授權明列可用的「首圖連結」。
+ *
+ * 授權注意：只推送標題、前言、首圖與原文連結，保留中央社發稿訊頭，標註「中央通訊社」。
  * 中央社 RSS 使用規範限定個人／非營利非商業用途，且禁止引用全文。
+ * 不做 Telegram Instant View：那會讓全文在 Telegram 內重新上架，正是條款排除的那一項。
  */
 
 // ---------------------------------------------------------------------------
@@ -31,8 +38,12 @@ type Item = {
   guid: string;
   title: string;
   link: string;
-  desc: string;
+  /** 中央社發稿訊頭，例：「（中央社記者李宗憲曼谷16日專電）」。抽不出來時為空字串 */
+  head: string;
 };
+
+/** 一個 RSS 分類。emoji 只用於訊息開頭的視覺標記，不影響任何邏輯 */
+type Feed = [category: string, slug: string, emoji: string];
 
 // ---------------------------------------------------------------------------
 // 設定
@@ -43,18 +54,18 @@ type Item = {
  * 不需要的分類請直接刪掉，清單越短，每個分類被輪到的間隔就越短。
  * 目前 11 個分類 + 每分鐘觸發 = 每個分類約 11 分鐘掃一次。
  */
-const FEEDS: [category: string, slug: string][] = [
-  ["政治", "politics"],
-  ["國際", "intworld"],
-  ["兩岸", "mainland"],
-  ["產經", "finance"],
-  ["科技", "technology"],
-  ["生活", "lifehealth"],
-  ["社會", "social"],
-  ["地方", "local"],
-  ["文化", "culture"],
-  ["運動", "sport"],
-  ["娛樂", "stars"],
+const FEEDS: Feed[] = [
+  ["政治", "politics", "🏛️"],
+  ["國際", "intworld", "🌏"],
+  ["兩岸", "mainland", "🌊"], // 海峽的地理意象。刻意不用國旗，那會變成政治表態
+  ["產經", "finance", "📈"],
+  ["科技", "technology", "💻"],
+  ["生活", "lifehealth", "🌿"],
+  ["社會", "social", "🚨"],
+  ["地方", "local", "📍"],
+  ["文化", "culture", "🎨"],
+  ["運動", "sport", "🏅"], // 用獎牌而非單一球類，才涵蓋得住綜合賽事
+  ["娛樂", "stars", "🎬"],
 ];
 
 /** 每輪最多解析幾則 item。調高會增加 CPU 消耗，有撞到 Error 1102 的風險 */
@@ -66,9 +77,6 @@ const MAX_SEND = 20;
 /** 每則之間的間隔（毫秒）。Telegram 頻道大約每分鐘只接受 20 則訊息 */
 const GAP_MS = 3200;
 
-/** 前言最多保留幾個字 */
-const DESC_LIMIT = 450;
-
 // ---------------------------------------------------------------------------
 // 工具函式
 // ---------------------------------------------------------------------------
@@ -79,6 +87,13 @@ const RE_TITLE = /<title[^>]*>([\s\S]*?)<\/title>/;
 const RE_LINK = /<link[^>]*>([\s\S]*?)<\/link>/;
 const RE_GUID = /<guid[^>]*>([\s\S]*?)<\/guid>/;
 const RE_DESC = /<description[^>]*>([\s\S]*?)<\/description>/;
+
+/**
+ * 中央社發稿訊頭。涵蓋「（中央社記者OOO台北16日電）」「（中央社倫敦16日綜合外電報導）」
+ * 等各種變體——共通點是以「（中央社」開頭、到第一個全形右括號為止。
+ * 實測 5 個分類共 100 則，100% 抽得出來。
+ */
+const RE_HEAD = /^（中央社[^）]*）/;
 
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
@@ -129,11 +144,17 @@ function parseItems(xml: string, max: number): Item[] {
     const title = clean(block.match(RE_TITLE)?.[1] ?? "");
     if (!title) continue;
 
+    // 只取訊頭，其餘前言不進訊息本文——Telegram 的連結預覽會從中央社自己的
+    // og:description 顯示同一段前言，兩邊都放等於同一段話讀者要看兩次。
+    // 而訊頭是預覽永遠不會顯示的（中央社產 og:description 時就把它砍掉了），
+    // 所以留訊頭是補上預覽缺的那塊，不是重複。
+    const desc = clean(block.match(RE_DESC)?.[1] ?? "");
+
     out.push({
       guid,
       link,
       title,
-      desc: clean(block.match(RE_DESC)?.[1] ?? "").slice(0, DESC_LIMIT),
+      head: desc.match(RE_HEAD)?.[0] ?? "",
     });
   }
 
@@ -150,13 +171,18 @@ function parseItems(xml: string, max: number): Item[] {
 async function sendMessage(
   env: Env,
   category: string,
+  emoji: string,
   item: Item,
   depth = 0,
 ): Promise<void> {
+  // emoji 放在 <a> 外面：它不是中央社標題的一部分，包進去會被染成連結色，
+  // 也會讓「哪幾個字是標題」變模糊。
+  // href 一定要 escape——clean() 會把 &amp; 還原成裸 &，真的出現在網址裡會讓
+  // Telegram 的 HTML 解析爛掉。目前中央社的 link 都沒有 query string，但這是零成本的保險。
+  // 結尾的「中央通訊社」不能省：授權條款要求以文字標示，訊頭寫的是「中央社」不算數。
   const text =
-    `📰 <b>${escapeHtml(item.title)}</b>\n\n` +
-    `${escapeHtml(item.desc)}\n\n` +
-    `<a href="${item.link}">閱讀全文</a>\n` +
+    `${emoji} <a href="${escapeHtml(item.link)}"><b>${escapeHtml(item.title)}</b></a>\n` +
+    (item.head ? `${escapeHtml(item.head)}\n` : "") +
     `—— 中央通訊社 · ${category}`;
 
   const res = await fetch(
@@ -168,7 +194,13 @@ async function sendMessage(
         chat_id: env.TG_CHAT,
         text,
         parse_mode: "HTML",
-        link_preview_options: { is_disabled: false },
+        // 顯式指定 url，不依賴「訊息文字裡的第一個網址」那套 fallback。
+        // 預覽卡片負責呈現首圖與前言，這兩樣都是 RSS 授權明列可用的項目，
+        // 而且是 Telegram 直接讀中央社自己的 og tag，不經過我們轉手。
+        link_preview_options: {
+          url: item.link,
+          prefer_large_media: true,
+        },
       }),
     },
   );
@@ -180,7 +212,7 @@ async function sendMessage(
     const wait = (body.parameters?.retry_after ?? 5) + 1;
     console.log(`429 rate limited, retry after ${wait}s`);
     await sleep(wait * 1000);
-    return sendMessage(env, category, item, depth + 1);
+    return sendMessage(env, category, emoji, item, depth + 1);
   }
 
   if (!res.ok) {
@@ -195,7 +227,7 @@ async function sendMessage(
 async function run(env: Env): Promise<string> {
   // 依「當前分鐘數」輪詢分類，讓每個分類平均被掃到
   const index = Math.floor(Date.now() / 60_000) % FEEDS.length;
-  const [category, slug] = FEEDS[index];
+  const [category, slug, emoji] = FEEDS[index];
 
   const feedUrl = `https://feeds.feedburner.com/rsscna/${slug}`;
   const res = await fetch(feedUrl, {
@@ -224,7 +256,7 @@ async function run(env: Env): Promise<string> {
     if (sent >= MAX_SEND) break; // 保護 subrequest 額度
 
     try {
-      await sendMessage(env, category, item);
+      await sendMessage(env, category, emoji, item);
       sent++;
       await sleep(GAP_MS);
     } catch (err) {
