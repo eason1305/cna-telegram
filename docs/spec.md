@@ -1578,7 +1578,7 @@ Workers 設定檔。**你必須修改 `database_id`**（步驟 5 取得）。
     {
       "binding": "DB",
       "database_name": "cna",
-      "database_id": "8068ea04-6a5a-48ca-9f49-786745bbae92",
+      "database_id": "請填入 wrangler d1 create 回傳的 database_id",
     },
   ],
 
