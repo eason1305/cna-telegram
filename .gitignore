@@ -1,0 +1,7 @@
+node_modules/
+.wrangler/
+dist/
+
+# 本機開發用的環境變數，絕對不要提交
+.dev.vars
+.env

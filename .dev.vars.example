@@ -1,0 +1,8 @@
+# 本機開發用。複製成 .dev.vars 後填入真實值。
+# .dev.vars 已列在 .gitignore，不會被提交。
+# 注意：這個檔案只在 `wrangler dev` 本機執行時生效，
+#       部署到正式環境的機密要用 `wrangler secret put` 設定。
+
+TG_TOKEN=123456789:AAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+TG_CHAT=@your_channel_name
+SEED_ONLY=1

@@ -1,0 +1,47 @@
+{
+  // Worker 名稱，會成為 *.workers.dev 子網域的一部分
+  "name": "cna-telegram",
+
+  // 進入點
+  "main": "src/index.ts",
+
+  // 相容性日期：決定 Workers runtime 的行為版本。設定後就不要隨意往前調，
+  // 否則可能踩到 runtime 行為變更。要更新時請先在本機測過。
+  "compatibility_date": "2026-08-01",
+
+  // Cron 排程（UTC 時區，最小粒度 1 分鐘）
+  // "* * * * *" = 每分鐘觸發一次
+  // 11 個分類輪詢 → 每個分類約 11 分鐘掃一次
+  // 免費方案每帳號最多 5 個 Cron Trigger，這裡只用 1 個
+  "triggers": {
+    "crons": ["* * * * *"],
+  },
+
+  // D1 資料庫綁定
+  // binding       = 程式裡 env.DB 的名稱，不要改
+  // database_name = 你執行 `wrangler d1 create cna` 時給的名稱
+  // database_id   = 上述指令回傳的 UUID，請填進去
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "cna",
+      "database_id": "8068ea04-6a5a-48ca-9f49-786745bbae92",
+    },
+  ],
+
+  // 非敏感的環境變數（敏感的請用 wrangler secret put）
+  // SEED_ONLY = "1" → 只寫入去重資料庫、不推播，用於首次上線灌種
+  // SEED_ONLY = "0" → 正常推播
+  //
+  // 這裡固定放正式值 "0"。灌種請用 `npm run deploy:seed`（以 --var 覆蓋成 "1"），
+  // 不要把預設值改回 "1"：那樣之後任何一次不帶 --var 的 `npm run deploy`
+  // 都會靜默退回灌種模式，頻道停止推播而且不會報錯。
+  "vars": {
+    "SEED_ONLY": "0",
+  },
+
+  // 開啟可觀測性，這樣 dashboard 的 Logs 才看得到 console.log 輸出
+  "observability": {
+    "enabled": true,
+  },
+}

@@ -1,0 +1,23 @@
+{
+  "name": "cna-telegram",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev --test-scheduled",
+    "deploy": "wrangler deploy",
+    "deploy:seed": "wrangler deploy --var SEED_ONLY:1",
+    "deploy:prod": "wrangler deploy --var SEED_ONLY:0",
+    "tail": "wrangler tail",
+    "db:init": "wrangler d1 execute cna --remote --file=./schema.sql",
+    "db:init:local": "wrangler d1 execute cna --local --file=./schema.sql",
+    "db:count": "wrangler d1 execute cna --remote --command=\"SELECT cat, COUNT(*) AS n FROM seen GROUP BY cat ORDER BY n DESC\"",
+    "db:recent": "wrangler d1 execute cna --remote --command=\"SELECT datetime(ts/1000,'unixepoch','+8 hours') AS t, cat, title FROM seen ORDER BY ts DESC LIMIT 10\"",
+    "db:purge": "wrangler d1 execute cna --remote --command=\"DELETE FROM seen WHERE ts < (unixepoch()-7776000)*1000\"",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260801.1",
+    "typescript": "^5.6.0",
+    "wrangler": "^4.0.0"
+  }
+}
