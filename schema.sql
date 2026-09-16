@@ -50,7 +50,11 @@ CREATE TABLE IF NOT EXISTS picked (
   url       TEXT NOT NULL,
   pub_at    INTEGER,            -- 發布時間（來自 <time datetime>），判斷要不要等 RSS 補前言
   found_at  INTEGER NOT NULL,   -- 我們第一次看到它的時間
-  pushed_at INTEGER             -- NULL = 尚未推播。送出失敗時維持 NULL，下一輪自動重試
+  pushed_at INTEGER,            -- NULL = 尚未推播。送出失敗時維持 NULL，下一輪自動重試
+  tries     INTEGER NOT NULL DEFAULT 0
+                                -- 送出失敗過幾次。排序的第一順位，讓失敗過的沉到隊尾，
+                                -- 否則一則永遠送不出去的會卡在隊首，把後面所有新聞堵死
 );
 
-CREATE INDEX IF NOT EXISTS picked_pending ON picked (pushed_at, found_at);
+-- 排序是 (tries, found_at, pub_at)，索引要跟著走，否則每次都得排序整張表。
+CREATE INDEX IF NOT EXISTS picked_pending ON picked (pushed_at, tries, found_at);
