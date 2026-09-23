@@ -20,6 +20,8 @@ Cloudflare Workers 定時抓中央社 RSS，推送到 Telegram 頻道。
 
 ## 常用指令
 
+- npm test 單元與 D1 整合測試（離線，不碰 Telegram）
+- npm run typecheck 型別檢查
 - npm run dev 本機測試（含 --test-scheduled）
 - npm run tail 即時日誌
 - npm run db:count 各分類推播統計

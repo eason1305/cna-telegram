@@ -4,7 +4,7 @@
 
 推播的不是全部新聞，而是中央社編輯部自己挑進版面的三份清單（聚焦、新聞圖表、特派看世界），每天約 40 則。原因見〈[推播哪些新聞](#推播哪些新聞)〉。
 
-本文件包含**教學步驟**與**所有檔案的完整內容**，照著做完就能上線。
+本文件包含**教學步驟**與**各檔案的說明**，檔案內容以 repo 為準，照著做完就能上線。
 
 ---
 
@@ -29,17 +29,16 @@
 - [步驟 10：正式上線](#步驟-10正式上線)
 - [步驟 11：監控與維護](#步驟-11監控與維護)
 
-**第二部分：完整檔案內容**
+**第二部分：檔案說明**
 
-- [檔案 1：src/index.ts](#檔案-1srcindexts)
-- [檔案 2：wrangler.jsonc](#檔案-2wranglerjsonc)
-- [檔案 3：schema.sql](#檔案-3schemasql)
-- [檔案 4：migrations/001_picked.sql](#檔案-4migrations001_pickedsql)
-- [檔案 5：migrations/002_tries.sql](#檔案-5migrations002_triessql)
-- [檔案 6：package.json](#檔案-6packagejson)
-- [檔案 7：tsconfig.json](#檔案-7tsconfigjson)
-- [檔案 8：.gitignore](#檔案-8gitignore)
-- [檔案 9：.dev.vars.example](#檔案-9devvarsexample)
+- [程式碼：src/](#程式碼src)
+- [測試：test/](#測試test)
+- [wrangler.jsonc](#wranglerjsonc)
+- [schema.sql](#schemasql)
+- [migrations/001_picked.sql](#migrations001_pickedsql)
+- [migrations/002_tries.sql](#migrations002_triessql)
+- [package.json](#packagejson)
+- [其他](#其他)
 
 **第三部分：參考資料**
 
@@ -116,11 +115,11 @@
 
 改用中央社網站上三份**人工挑選**的版面，它們本來就是編輯台每天在做的事：
 
-| 來源     | 網址                              | 量       | 檢查頻率        |
-| -------- | --------------------------------- | -------- | --------------- |
-| 聚焦     | `/list/headlines.aspx`            | 約 40 則／天   | 每 5 分鐘 |
-| 新聞圖表 | `/topic/newstopic/4479.aspx`      | 約 0.4 則／天  | 每天台北 08:00 |
-| 特派看世界 | `/topic/newstopic/4215.aspx`    | 約 1.6 則／週  | 每週日台北 08:00 |
+| 來源       | 網址                         | 量            | 檢查頻率         |
+| ---------- | ---------------------------- | ------------- | ---------------- |
+| 聚焦       | `/list/headlines.aspx`       | 約 40 則／天  | 每 5 分鐘        |
+| 新聞圖表   | `/topic/newstopic/4479.aspx` | 約 0.4 則／天 | 每天台北 08:00   |
+| 特派看世界 | `/topic/newstopic/4215.aspx` | 約 1.6 則／週 | 每週日台北 08:00 |
 
 推播量因此降到原本的十分之一左右。
 
@@ -147,12 +146,12 @@
 
 四條 Cron，分成三種工作。**拆開的理由是免費方案每次觸發只有 10 ms CPU time**，解析與推播擠在一起會撞上限。
 
-| Cron            | 工作       | 做什麼                                            |
-| --------------- | ---------- | ------------------------------------------------- |
-| `* * * * *`     | `scan()`   | 掃 1 個 RSS 分類寫入 `seen`，建立「文章 ID → 發稿訊頭」查找表。**不推播** |
-| `*/5 * * * *`   | `discover()` + `drain()` | 抓聚焦清單頁記進 `picked`，然後推播。**唯一會推播的一條** |
-| `0 0 * * *`     | `discover()` | 抓新聞圖表清單頁記進 `picked`。不推播            |
-| `0 0 * * SUN`   | `discover()` | 抓特派看世界清單頁記進 `picked`。不推播          |
+| Cron          | 工作                     | 做什麼                                                                    |
+| ------------- | ------------------------ | ------------------------------------------------------------------------- |
+| `* * * * *`   | `scan()`                 | 掃 1 個 RSS 分類寫入 `seen`，建立「文章 ID → 發稿訊頭」查找表。**不推播** |
+| `*/5 * * * *` | `discover()` + `drain()` | 抓聚焦清單頁記進 `picked`，然後推播。**唯一會推播的一條**                 |
+| `0 0 * * *`   | `discover()`             | 抓新聞圖表清單頁記進 `picked`。不推播                                     |
+| `0 0 * * SUN` | `discover()`             | 抓特派看世界清單頁記進 `picked`。不推播                                   |
 
 > **星期欄位不要用數字。** Cloudflare 的 weekday 是 `1-7` 而且 **1 = 週日**，與多數 cron 系統（0 = 週日、6 = 週六）不同。寫 `0` 會被 API 直接拒絕（`invalid cron string`，而且部署會停在「triggers 只更新了一部分」的狀態）；更危險的是直覺改成 `7` **不會報錯**，它會安靜地變成每週六執行。用 `SUN` 這種三字母縮寫就沒有這個問題，官方文件也是這樣建議的。
 
@@ -183,7 +182,16 @@ RSS feed 的深度只有 4～5 小時（實測國際／產經／生活為 4.1～
 ```
 cna-telegram/
 ├── src/
-│   └── index.ts            ← 主程式（掃 RSS、讀清單頁、去重、推播）
+│   ├── index.ts            ← Worker 入口（Cron 分派、HTTP 轉交）
+│   ├── config.ts           ← 來源、Cron、各種上限
+│   ├── parse.ts            ← RSS／清單頁的正則抽取
+│   ├── scan.ts             ← 掃 RSS 建訊頭查找表
+│   ├── picks.ts            ← 記錄編輯清單、推播
+│   ├── telegram.ts         ← 組訊息、送 Telegram
+│   ├── http.ts             ← 手動觸發與統計端點
+│   ├── types.ts
+│   └── util.ts
+├── test/                   ← vitest 測試與 fixtures（npm test）
 ├── migrations/
 │   ├── 001_picked.sql      ← 既有資料庫升級用：新增 picked 表
 │   └── 002_tries.sql       ← 既有資料庫升級用：新增 tries 欄位
@@ -191,20 +199,24 @@ cna-telegram/
 ├── wrangler.jsonc          ← Cloudflare Workers 設定檔
 ├── package.json            ← 相依套件與常用指令
 ├── tsconfig.json           ← TypeScript 設定
+├── vitest.config.mts       ← 測試設定
 ├── .gitignore              ← 排除 node_modules 與機密檔案
 └── .dev.vars.example       ← 本機環境變數範本
 ```
 
-| 檔案                | 你需要修改嗎 | 說明                                                          |
-| ------------------- | ------------ | ------------------------------------------------------------- |
-| `src/index.ts`      | 可選         | 想增減來源就改 `SOURCES`；想調訊息格式就改 `sendMessage()`    |
-| `migrations/*.sql`  | 不用         | **全新環境用不到**，只有既有資料庫升級時才跑                  |
-| `schema.sql`        | 不用         | 直接套用                                                      |
-| `wrangler.jsonc`    | **要**       | 必須填入步驟 5 取得的 `database_id`                           |
-| `package.json`      | 不用         | 提供 `npm run` 捷徑                                           |
-| `tsconfig.json`     | 不用         | 讓編輯器認得 Workers 的型別                                   |
-| `.gitignore`        | 不用         | 直接用                                                        |
-| `.dev.vars.example` | 要           | 複製成 `.dev.vars` 並填值（僅本機測試用）                     |
+| 檔案                | 你需要修改嗎 | 說明                                           |
+| ------------------- | ------------ | ---------------------------------------------- |
+| `src/config.ts`     | 可選         | 想增減來源就改 `SOURCES`（同時改 `CRON_JOBS`） |
+| `src/telegram.ts`   | 可選         | 想調訊息格式就改 `formatMessage()`             |
+| `src/` 其他         | 不用         | 各檔用途見第二部分                             |
+| `test/`             | 不用         | 改了程式就跑 `npm test`                        |
+| `migrations/*.sql`  | 不用         | **全新環境用不到**，只有既有資料庫升級時才跑   |
+| `schema.sql`        | 不用         | 直接套用                                       |
+| `wrangler.jsonc`    | **要**       | 必須填入步驟 5 取得的 `database_id`            |
+| `package.json`      | 不用         | 提供 `npm run` 捷徑                            |
+| `tsconfig.json`     | 不用         | 讓編輯器認得 Workers 的型別                    |
+| `.gitignore`        | 不用         | 直接用                                         |
+| `.dev.vars.example` | 要           | 複製成 `.dev.vars` 並填值（僅本機測試用）      |
 
 > `schema.sql` 與 `migrations/` 是兩條路，不要都跑。**全新環境只跑 `schema.sql`**，它已經包含所有 migration 的結果。`migrations/` 是給已經在跑舊版、資料不能刪的人逐步升級用的。
 
@@ -314,18 +326,24 @@ Wrangler 是 Cloudflare Workers 的命令列工具，不需要全域安裝，下
 
 ## 步驟 4：建立專案
 
-### 方法 A：手動建立（推薦，因為檔案內容都在第二部分）
+### 方法 A：clone repo（推薦）
 
 ```bash
-mkdir -p cna-telegram/src && cd cna-telegram
+git clone git@github.com:eason1305/cna-telegram.git
 ```
 
-（如果你是要把既有的舊版升級上來，再多建一個 `migrations` 目錄。全新環境用不到。）
-
-然後依照**第二部分**把檔案一個一個建立起來（全新環境不需要 `migrations/` 那兩份），最後：
+```bash
+cd cna-telegram
+```
 
 ```bash
 npm install
+```
+
+裝完跑一次測試，確認環境沒問題（全部在本機跑，不會碰 Cloudflare 或 Telegram）：
+
+```bash
+npm test
 ```
 
 ### 方法 B：從 Cloudflare 模板開始
@@ -342,7 +360,7 @@ npm create cloudflare@latest -- cna-telegram
 - **Do you want to use git for version control?** → `Yes`
 - **Do you want to deploy your application?** → **`No`**（還沒設定好，先不要部署）
 
-建好後用第二部分的內容覆蓋 `src/index.ts` 與 `wrangler.jsonc`，並補上 `schema.sql`。
+建好後把 repo 裡的 `src/`、`wrangler.jsonc`、`schema.sql` 複製過去覆蓋。
 
 ### 登入 Cloudflare
 
@@ -471,6 +489,16 @@ cp .dev.vars.example .dev.vars
 ---
 
 ## 步驟 8：本機測試
+
+### 自動測試
+
+```bash
+npm test
+```
+
+預期輸出最後是 `Test Files  5 passed`。這一步完全離線：D1 是測試專用的本機實例，對外請求都是 mock，不需要 `.dev.vars`，也不會推播。
+
+### 啟動本機 Worker
 
 ```bash
 npm run dev
@@ -726,11 +754,21 @@ Cloudflare 不會在排程失敗時寄信或重試。如果 Worker 掛了，你�
 headlines: parsed 0 items — 清單頁結構可能已變更
 ```
 
-`npm run tail` 看到這行，或 `/stats` 的 `tracked` 長期不動，就是該去看頁面結構了。要修的是 `src/index.ts` 裡的 `parseList()` 與 `RE_HREF`／`RE_H2`／`RE_DATETIME` 三條正則。
+`npm run tail` 看到這行，或 `/stats` 的 `tracked` 長期不動，就是該去看頁面結構了。要修的是 `src/parse.ts` 裡的 `parseList()` 與 `RE_HREF`／`RE_H2`／`RE_DATETIME` 三條正則。先抓一份新頁面換掉 `test/fixtures/` 裡的樣本，`npm test` 會告訴你哪裡對不上。
 
 ### 更新程式碼
 
-改完 `src/index.ts` 後：
+改完 `src/` 後先跑測試與型別檢查：
+
+```bash
+npm test
+```
+
+```bash
+npm run typecheck
+```
+
+都過了再部署：
 
 ```bash
 npm run deploy
@@ -756,24 +794,38 @@ curl "https://cna-telegram.<你的子網域>.workers.dev/pick?src=chart"
 
 ---
 
-# 第二部分：完整檔案內容
+# 第二部分：檔案說明
 
-## 檔案 1：`src/index.ts`
+檔案內容以 repo 為準（`git clone git@github.com:eason1305/cna-telegram.git`），這裡只說明每個檔案做什麼、改動時要注意什麼。程式註解寫的是「為什麼這樣寫」，不只是「做了什麼」，改之前先讀註解。
 
-主程式。註解寫的是「為什麼這樣寫」，不只是「做了什麼」——特別是 `parseItems()` 為何用正則而非 XML 解析器、`RE_ITEM.lastIndex = 0` 為何必要、`clean()` 裡 `&amp;` 為何必須放最後、`parseList()` 為何先用 `indexOf` 切出區段再跑正則、為何以 `<li>` 切塊而不是用一條長正則、為何只有一條 Cron 能推播、`href` 為何一定要 `escapeHtml()`。這些是之後你自己改動時最容易踩到的地方。
+## 程式碼：`src/`
+
+| 檔案          | 內容                                                                                  |
+| ------------- | ------------------------------------------------------------------------------------- |
+| `index.ts`    | Worker 入口。檔頭是整體設計說明；`scheduled` 依 Cron 字串分派，`fetch` 轉交 `http.ts` |
+| `config.ts`   | 所有可調的設定：`FEEDS`、`SOURCES`、`CRON_JOBS`、`MAX_SEND` 等上限與等待時間          |
+| `parse.ts`    | 正則抽取：`parseItems()`（RSS）、`parseList()`（清單頁）、`clean()`、`isFeature()`    |
+| `scan.ts`     | `scan()`：掃 1 個 RSS 分類寫入 `seen`，建訊頭查找表                                   |
+| `picks.ts`    | `discover()`：抓 1 份編輯清單寫入 `picked`；`drain()`：把還沒推的送出去               |
+| `telegram.ts` | `formatMessage()` 組訊息本文、`sendMessage()` 送出並處理 429                          |
+| `http.ts`     | `/run`、`/pick`、`/push`、`/stats` 與健康檢查                                         |
+| `types.ts`    | `Env` 與幾個資料型別                                                                  |
+| `util.ts`     | `sleep()`、`escapeHtml()`、`sumChanges()`                                             |
+
+改動時最容易踩到的地方，註解裡都有寫理由：`parseItems()` 為何用正則而非 XML 解析器、`RE_ITEM.lastIndex = 0` 為何必要、`clean()` 裡 `&amp;` 為何必須放最後、`parseList()` 為何先用 `indexOf` 切出區段再跑正則、為何以 `<li>` 切塊而不是用一條長正則、為何只有一條 Cron 能推播、`href` 為何一定要 `escapeHtml()`。
 
 三個主要函式的分工：
 
-| 函式         | 做什麼                                       | 碰解析嗎 |
-| ------------ | -------------------------------------------- | -------- |
-| `scan()`     | 掃 1 個 RSS 分類寫入 `seen`，建訊頭查找表    | XML      |
-| `discover()` | 抓 1 份編輯清單頁寫入 `picked`               | HTML     |
-| `drain()`    | 把 `picked` 裡還沒推的送出去                 | 都不碰   |
+| 函式         | 所在檔案   | 做什麼                                    | 碰解析嗎 |
+| ------------ | ---------- | ----------------------------------------- | -------- |
+| `scan()`     | `scan.ts`  | 掃 1 個 RSS 分類寫入 `seen`，建訊頭查找表 | XML      |
+| `discover()` | `picks.ts` | 抓 1 份編輯清單頁寫入 `picked`            | HTML     |
+| `drain()`    | `picks.ts` | 把 `picked` 裡還沒推的送出去              | 都不碰   |
 
 訊息長這樣（標題整行是超連結，下面接大圖預覽卡）：
 
 ```
-💻 泰國專家：AI治理與發展非二選一　應先釐清責任歸屬
+💻 泰國專家：AI治理與發展非二選一 應先釐清責任歸屬
 （中央社記者李宗憲曼谷16日專電）
 —— 中央通訊社 · 科技
 ```
@@ -789,1102 +841,58 @@ curl "https://cna-telegram.<你的子網域>.workers.dev/pick?src=chart"
 
 分類 emoji 對照：🏛️ 政治／🌏 國際／🌊 兩岸／📈 產經／💻 科技／🌿 生活／🚨 社會／📍 地方／🎨 文化／🏅 運動／🎬 娛樂。建議在頻道也置頂一則對照表——11 個 emoji 讀者記不住，所以結尾那行的分類名稱**不要拿掉**，emoji 負責掃視、文字負責消歧義。
 
-編輯清單頁只給網址不給分類名稱，分類是靠網址裡的代碼（`aipl`／`aopl`／`acn` …）反查回來的，所以 `FEEDS` 每一列的第四欄 `urlSlug` 不能漏。
+編輯清單頁只給網址不給分類名稱，分類是靠網址裡的代碼（`aipl`／`aopl`／`acn` …）反查回來的，所以 `config.ts` 裡 `FEEDS` 每一筆的 `urlSlug` 不能漏。
 
-```typescript
-/**
- * 中央社新聞 → Telegram 頻道（非官方）
- *
- * 推播對象不是全部新聞，而是中央社編輯部自己挑進版面的三份清單：
- * 聚焦、新聞圖表、特派看世界。程式不判斷新聞價值，只做同步。
- * 這是刻意的取捨——自行用關鍵字評分試過，中文沒有詞界會把「陸軍演練」誤判成「軍演」，
- * 也讀不出「對台灣無直接影響」的否定語意，不如直接沿用中央社的編輯判斷。
- *
- * 設計重點（對應 Cloudflare Workers Free 方案的限制）：
- *  1. 免費方案每次 Cron 觸發只有 10 ms CPU time，所以解析與推播拆成不同工作：
- *     scan() 解析 RSS、discover() 解析清單頁，兩者都不推播；drain() 只查 D1 與送訊息。
- *  2. 用正則抽取而非完整 XML／HTML 解析器，省 CPU、也省 bundle 體積（免費上限 3 MB）。
- *  3. 等待網路與 sleep 不計入 CPU time，所以節流可以放心慢慢送。
- *  4. 免費方案每次觸發最多 50 個 subrequest，**D1 查詢也算**，所以 MAX_SEND 設 12。
- *  5. 去重靠 D1 的 INSERT OR IGNORE 一次解決（原子操作）。
- *  6. 推播的並行安全則靠「全系統只有一條 Cron 會 drain」——撈 pending 再標記是
- *     先查再寫，不是原子的，同時跑兩個實例就會重複推播。詳見 CRON_JOBS。
- *
- * 訊息構成（為什麼長這樣）：
- *  本文只放「分類 emoji + 超連結標題 + 發稿訊頭 + 出處」，前言交給 Telegram 的
- *  連結預覽卡片。中央社的 og:description 就是 RSS <description> 去掉訊頭，兩邊都放
- *  等於同一段話讀者要看兩次；而卡片同時帶回首圖（og:image 多為真實文章照片），
- *  這也是 RSS 授權明列可用的「首圖連結」。
- *
- * 內容來源的界線：
- *  清單頁只用來決定「推哪幾則」，訊息本文的文字一律取自 RSS feed，
- *  任何情況下都不抓文章內頁。特稿系列不進 RSS、查不到訊頭時就少一行，不另尋來源。
- *
- * 授權注意：只推送標題、前言、首圖與原文連結，保留中央社發稿訊頭，標註「中央通訊社」。
- * 中央社 RSS 使用規範限定個人／非營利非商業用途，且禁止引用全文。
- * 不做 Telegram Instant View：那會讓全文在 Telegram 內重新上架，正是條款排除的那一項。
- */
+## 測試：`test/`
 
-// ---------------------------------------------------------------------------
-// 型別定義
-// ---------------------------------------------------------------------------
+`npm test` 用 vitest 在 workerd 裡跑，D1 是本機的 miniflare 實例，不會碰正式資料庫，也不會打到 Telegram（`TG_TOKEN` 在 `vitest.config.mts` 裡覆蓋成假值，對外請求全部 mock）。
 
-export interface Env {
-  /** D1 資料庫綁定，名稱對應 wrangler.jsonc 裡的 binding */
-  DB: D1Database;
-  /** Telegram Bot Token（用 wrangler secret put 設定，不要寫在檔案裡） */
-  TG_TOKEN: string;
-  /** 目標頻道，公開頻道用 "@channel_name"，私人頻道用 "-100xxxxxxxxxx" */
-  TG_CHAT: string;
-  /** "1" = 只寫入資料庫、不實際推播（首次上線灌種用） */
-  SEED_ONLY: string;
-}
+| 檔案               | 測什麼                                                                                    |
+| ------------------ | ----------------------------------------------------------------------------------------- |
+| `parse.test.ts`    | 解析器。`fixtures/` 是中央社真實頁面裁剪下來的樣本                                        |
+| `config.test.ts`   | 直接讀 `wrangler.jsonc`，確認 crons 與 `CRON_JOBS` 逐字一致、只有一條 drain、星期不用數字 |
+| `telegram.test.ts` | 訊息格式、escape、429 退避                                                                |
+| `picks.test.ts`    | scan／discover／drain 對 D1 的實際行為：去重、灌種、等訊頭、失敗重試、排序、上限          |
+| `http.test.ts`     | HTTP 端點                                                                                 |
 
-type Item = {
-  guid: string;
-  /** 12 位文章 ID，與編輯清單頁對接的唯一鍵 */
-  aid: string;
-  title: string;
-  link: string;
-  /** 中央社發稿訊頭，例：「（中央社記者李宗憲曼谷16日專電）」。抽不出來時為空字串 */
-  head: string;
-};
+**中央社改版時**：先抓一份新頁面換掉 `test/fixtures/` 裡對應的檔案，跑 `npm test` 看哪裡壞，再改 `parse.ts`。
 
-/** 編輯清單頁上的一則新聞 */
-type Pick = {
-  aid: string;
-  /** 網址裡的分類代碼 aipl / aopl / acn … */
-  slug: string;
-  title: string;
-  url: string;
-  pubAt: number | null;
-};
-
-/** 準備送往 Telegram 的一則訊息 */
-type Outgoing = {
-  emoji: string;
-  title: string;
-  link: string;
-  head: string;
-  category: string;
-  /** 來源標記，例「📊 新聞圖表」。聚焦為空字串 */
-  tag: string;
-};
-
-/**
- * 一個 RSS 分類。
- * emoji 只用於訊息開頭的視覺標記，不影響任何邏輯。
- * urlSlug 是中央社網址裡的分類代碼，編輯清單頁只給網址不給分類名稱，
- * 要靠它還原成分類與 emoji——放在同一個元組裡才不會跟上面兩欄各自漂移。
- */
-type Feed = [
-  category: string,
-  slug: string,
-  emoji: string,
-  urlSlug: string,
-];
-
-type SourceKey = "headlines" | "chart" | "world";
-
-// ---------------------------------------------------------------------------
-// 設定
-// ---------------------------------------------------------------------------
-
-/**
- * 中央社 RSS 分類。這 11 個是官方 /about/rss.aspx 提供的全部 feed，
- * 沒有「聚焦」之類的編輯清單 feed，所以那三份清單只能從網頁取得。
- *
- * 掃描這些 feed 的唯一目的是建立「文章 ID → 發稿訊頭」查找表，本身不推播任何東西。
- * urlSlug 對應關係由 208 筆 RSS 實際資料反推，11 對 11 一對一。
- */
-const FEEDS: Feed[] = [
-  ["政治", "politics", "🏛️", "aipl"],
-  ["國際", "intworld", "🌏", "aopl"],
-  ["兩岸", "mainland", "🌊", "acn"], // 海峽的地理意象。刻意不用國旗，那會變成政治表態
-  ["產經", "finance", "📈", "afe"],
-  ["科技", "technology", "💻", "ait"],
-  ["生活", "lifehealth", "🌿", "ahel"],
-  ["社會", "social", "🚨", "asoc"],
-  ["地方", "local", "📍", "aloc"],
-  ["文化", "culture", "🎨", "acul"],
-  ["運動", "sport", "🏅", "aspt"], // 用獎牌而非單一球類，才涵蓋得住綜合賽事
-  ["娛樂", "stars", "🎬", "amov"],
-];
-
-/** urlSlug → Feed。由 FEEDS 直接導出，確保只有一份真相 */
-const BY_URL_SLUG = new Map(FEEDS.map((f) => [f[3], f]));
-
-/**
- * 三份編輯清單。三者的 HTML 結構完全相同，所以這裡只是資料，不是三份程式碼。
- * tag 會加在訊息結尾：圖表稿與特稿跟文字稿是各自獨立的文章、各有各的 ID，
- * 去重擋不住「同事件不同文章」，標記能讓它讀起來是補充版本而不是系統推了兩次。
- */
-const SOURCES: Record<SourceKey, { url: string; tag: string }> = {
-  headlines: { url: "https://www.cna.com.tw/list/headlines.aspx", tag: "" },
-  chart: {
-    url: "https://www.cna.com.tw/topic/newstopic/4479.aspx",
-    tag: "📊 新聞圖表",
-  },
-  world: {
-    url: "https://www.cna.com.tw/topic/newstopic/4215.aspx",
-    tag: "🌍 特派看世界",
-  },
-};
-
-/** 每輪最多解析幾則 item。調高會增加 CPU 消耗，有撞到 Error 1102 的風險 */
-const MAX_ITEMS = 15;
-
-/**
- * 每輪最多推播幾則。
- *
- * 免費方案每次 invocation 上限 50 個 subrequest，而**D1 的每次查詢也算 subrequest**
- * （官方文件：「A subrequest is any request a Worker makes using the Fetch API or to
- * Cloudflare services like R2, KV, or D1」，D1 limits 頁的「Queries per Worker
- * invocation」也直接標注 read subrequest limits = Free 50）。只算 Telegram 呼叫會嚴重低估。
- *
- * 每 5 分鐘那條同時做 discover + drain，是預算最緊的一次 invocation。D1 文件沒寫清楚
- * batch 裡的每個 statement 算一次還是整批算一次，所以用悲觀假設抓：
- *
- *   清單頁 fetch                        1
- *   INSERT OR IGNORE × 20 則（batch）   20   （樂觀假設：1）
- *   pending SELECT                      1
- *   每則 sendMessage + UPDATE × 12     24
- *   ────────────────────────────────────
- *   合計                               46   （樂觀假設：27）
- *
- * 悲觀下仍留 4 個給 429 重試。吞吐量綽綽有餘：聚焦約 40 則／天，而 drain 每天跑
- * 288 次 × 12 = 3,456 則／天的容量。
- */
-const MAX_SEND = 12;
-
-/** 每則之間的間隔（毫秒）。Telegram 頻道大約每分鐘只接受 20 則訊息 */
-const GAP_MS = 3200;
-
-/**
- * 單次 drain 的牆鐘上限。
- * 必須遠小於 drain 那條 Cron 的間隔（300 秒），否則某輪被 429 退避拖太久時，
- * 下一輪會在它還沒跑完時啟動——兩個實例撈到同一批 pending 就會重複推播。
- * 正常情況是 12 × 3.2 秒 ≈ 38 秒，這條保險平時不會生效。
- */
-const MAX_DRAIN_MS = 200_000;
-
-/** 查不到訊頭時，最多等多久讓 RSS 掃描補上（每個分類 11 分鐘會輪到一次） */
-const WAIT_MS = 30 * 60_000;
-
-/**
- * 流水號 >= 此值者為特稿／專欄系列，永遠不會出現在即時新聞 RSS 裡。
- * 實證：連續兩天每分鐘掃描累積 505 篇 RSS 文章，3xxx 系列 0 篇。
- * 這條界線讓特稿不必白等 WAIT_MS——否則每週只跑一次的特派會被延後整整一週。
- */
-const FEATURE_SEQ = 3000;
-
-const UA = "cna-unofficial-telegram/1.0";
-
-// ---------------------------------------------------------------------------
-// 工具函式
-// ---------------------------------------------------------------------------
-
-/** 預先編譯的正則。放在模組層級，避免每次呼叫都重新建立（省 CPU） */
-const RE_ITEM = /<item[\s>][\s\S]*?<\/item>/g;
-const RE_TITLE = /<title[^>]*>([\s\S]*?)<\/title>/;
-const RE_LINK = /<link[^>]*>([\s\S]*?)<\/link>/;
-const RE_GUID = /<guid[^>]*>([\s\S]*?)<\/guid>/;
-const RE_DESC = /<description[^>]*>([\s\S]*?)<\/description>/;
-
-/**
- * 中央社發稿訊頭。涵蓋「（中央社記者OOO台北16日電）」「（中央社倫敦16日綜合外電報導）」
- * 等各種變體——共通點是以「（中央社」開頭、到第一個全形右括號為止。
- * 實測 5 個分類共 100 則，100% 抽得出來。
- */
-const RE_HEAD = /^（中央社[^）]*）/;
-
-/**
- * 編輯清單頁用。
- * href 這條同時扮演白名單：只有正規新聞稿的網址長這樣，影音（連 YouTube）、
- * 專題、圖輯都不符合而被跳過。用白名單而非黑名單，日後頁面夾帶新型態連結時
- * 預設行為是安全的。
- */
-const RE_HREF = /href="\/news\/([a-z]+)\/(\d{12})\.aspx"/;
-const RE_H2 = /<h2[^>]*>([\s\S]*?)<\/h2>/;
-const RE_DATETIME = /datetime="([^"]+)"/;
-
-const sleep = (ms: number): Promise<void> =>
-  new Promise((resolve) => setTimeout(resolve, ms));
-
-/** 轉義成 Telegram HTML parse_mode 可以安全接受的文字 */
-const escapeHtml = (s: string): string =>
-  s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-
-/**
- * 清理 RSS／HTML 欄位內容：
- *  - 剝掉 <![CDATA[ ... ]]> 外殼
- *  - 移除殘留的 HTML 標籤（清單頁的標題包在 <span> 裡，靠這步剝掉）
- *  - 還原常見的 XML 實體字元（&amp; 要放最後，否則會二次還原出錯）
- */
-function clean(raw: string): string {
-  return raw
-    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&apos;/g, "'")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-/** 從 guid 或連結取出 12 位文章 ID，這是與編輯清單頁對接的唯一鍵 */
-function extractAid(guid: string, link: string): string {
-  return (guid.match(/(\d{12})$/) ?? link.match(/\/(\d{12})\.aspx/))?.[1] ?? "";
-}
-
-/** 文章 ID 末 4 碼是當日流水號，用來分辨即時新聞（0xxx）與特稿（3xxx 以上） */
-const isFeature = (aid: string): boolean =>
-  Number(aid.slice(-4)) >= FEATURE_SEQ;
-
-/**
- * 從 RSS 原始字串抽出前 max 則項目。
- * 刻意不使用完整 XML 解析器，以控制 CPU 消耗在 10 ms 以內。
- * 代價：遇到非標準格式可能抽取失敗。
- */
-function parseItems(xml: string, max: number): Item[] {
-  const out: Item[] = [];
-  RE_ITEM.lastIndex = 0; // 全域正則會記住上次位置，每次用前必須歸零
-
-  let match: RegExpExecArray | null;
-  while (out.length < max && (match = RE_ITEM.exec(xml)) !== null) {
-    const block = match[0];
-
-    const link = clean(block.match(RE_LINK)?.[1] ?? "");
-    // 優先用 <guid>，沒有的話退回用連結當識別碼
-    const guid = clean(block.match(RE_GUID)?.[1] ?? "") || link;
-    if (!guid) continue;
-
-    const title = clean(block.match(RE_TITLE)?.[1] ?? "");
-    if (!title) continue;
-
-    // 只取訊頭，其餘前言不進訊息本文——Telegram 的連結預覽會從中央社自己的
-    // og:description 顯示同一段前言，兩邊都放等於同一段話讀者要看兩次。
-    // 而訊頭是預覽永遠不會顯示的（中央社產 og:description 時就把它砍掉了），
-    // 所以留訊頭是補上預覽缺的那塊，不是重複。
-    const desc = clean(block.match(RE_DESC)?.[1] ?? "");
-
-    out.push({
-      guid,
-      aid: extractAid(guid, link),
-      link,
-      title,
-      head: desc.match(RE_HEAD)?.[0] ?? "",
-    });
-  }
-
-  return out;
-}
-
-/**
- * 從編輯清單頁的 HTML 抽出文章清單。三份清單共用這一份解析器。
- *
- * 先用 indexOf 把約 8 KB 的清單區段切出來再跑正則——整頁有 113～118 KB，
- * 直接對全文跑正則會有撞上 10 ms CPU 上限的風險。
- *
- * 回傳空陣列代表頁面結構可能已變更（找不到 jsMainList），呼叫端必須記錄，
- * 否則頻道會靜默停止更新而無人察覺。
- */
-function parseList(html: string): Pick[] {
-  const start = html.indexOf('id="jsMainList"');
-  if (start < 0) return [];
-  const end = html.indexOf("</ul>", start);
-  if (end < 0) return [];
-
-  const out: Pick[] = [];
-  // 以 <li> 切塊而非用一條長正則跨欄位比對：清單頁夾雜影音等異質項目時，
-  // 切塊能保證標題與連結必定來自同一個 <li>，不會張冠李戴。
-  for (const li of html.slice(start, end).split("<li>").slice(1)) {
-    const href = li.match(RE_HREF);
-    if (!href) continue; // 白名單：非正規新聞稿一律跳過
-
-    const title = clean(li.match(RE_H2)?.[1] ?? "");
-    if (!title) continue;
-
-    const dt = li.match(RE_DATETIME)?.[1];
-    const pubAt = dt ? Date.parse(dt) : NaN;
-
-    out.push({
-      aid: href[2],
-      slug: href[1],
-      title,
-      url: `https://www.cna.com.tw/news/${href[1]}/${href[2]}.aspx`,
-      pubAt: Number.isNaN(pubAt) ? null : pubAt,
-    });
-  }
-
-  return out;
-}
-
-// ---------------------------------------------------------------------------
-// Telegram 推播
-// ---------------------------------------------------------------------------
-
-/**
- * 送出一則訊息。遇到 429（速率限制）會依 Telegram 指示的秒數退避後重試，最多兩次。
- *
- * head 可能是空字串：特稿系列不進 RSS，永遠抽不到訊頭。這種情況只是少一行，
- * 預覽卡片仍會從 og tag 帶回摘要與首圖，訊息依然完整可讀。
- */
-async function sendMessage(env: Env, msg: Outgoing, depth = 0): Promise<void> {
-  // emoji 放在 <a> 外面：它不是中央社標題的一部分，包進去會被染成連結色，
-  // 也會讓「哪幾個字是標題」變模糊。
-  // href 一定要 escape——clean() 會把 &amp; 還原成裸 &，真的出現在網址裡會讓
-  // Telegram 的 HTML 解析爛掉。目前中央社的 link 都沒有 query string，但這是零成本的保險。
-  // 結尾的「中央通訊社」不能省：授權條款要求以文字標示，訊頭寫的是「中央社」不算數。
-  const text =
-    `${msg.emoji} <a href="${escapeHtml(msg.link)}"><b>${escapeHtml(msg.title)}</b></a>\n` +
-    (msg.head ? `${escapeHtml(msg.head)}\n` : "") +
-    `—— 中央通訊社 · ${msg.category}${msg.tag ? ` · ${msg.tag}` : ""}`;
-
-  const res = await fetch(
-    `https://api.telegram.org/bot${env.TG_TOKEN}/sendMessage`,
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        chat_id: env.TG_CHAT,
-        text,
-        parse_mode: "HTML",
-        // 顯式指定 url，不依賴「訊息文字裡的第一個網址」那套 fallback。
-        // 預覽卡片負責呈現首圖與前言，這兩樣都是 RSS 授權明列可用的項目，
-        // 而且是 Telegram 直接讀中央社自己的 og tag，不經過我們轉手。
-        link_preview_options: {
-          url: msg.link,
-          prefer_large_media: true,
-        },
-      }),
-    },
-  );
-
-  if (res.status === 429 && depth < 2) {
-    const body = (await res.json()) as {
-      parameters?: { retry_after?: number };
-    };
-    const wait = (body.parameters?.retry_after ?? 5) + 1;
-    console.log(`429 rate limited, retry after ${wait}s`);
-    await sleep(wait * 1000);
-    return sendMessage(env, msg, depth + 1);
-  }
-
-  if (!res.ok) {
-    throw new Error(`telegram ${res.status}: ${await res.text()}`);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// 掃描：建立「文章 ID → 發稿訊頭」查找表
-// ---------------------------------------------------------------------------
-
-/**
- * 每分鐘輪詢一個 RSS 分類，把看到的新聞全部寫進 seen。**不推播任何東西。**
- *
- * 這是整套機制的前置作業：RSS feed 只保留 4～5 小時（實測國際／產經／生活為
- * 4.1～4.5 小時），而編輯清單每天／每週才檢查一次，推播當下再去抓 feed 一定來不及。
- * 所以訊頭必須在這裡就落地保存。
- */
-async function scan(env: Env): Promise<string> {
-  // 依「當前分鐘數」輪詢分類，讓每個分類平均被掃到（11 分類 → 每 11 分鐘一輪）
-  const index = Math.floor(Date.now() / 60_000) % FEEDS.length;
-  const [category, slug] = FEEDS[index];
-
-  const res = await fetch(`https://feeds.feedburner.com/rsscna/${slug}`, {
-    headers: { "user-agent": UA },
-  });
-
-  if (!res.ok) {
-    console.error(`feed ${slug} returned ${res.status}`);
-    return `${category}: feed error ${res.status}`;
-  }
-
-  const items = parseItems(await res.text(), MAX_ITEMS);
-  if (!items.length) {
-    console.error(`feed ${slug}: parsed 0 items`);
-    return `${category}: parsed 0`;
-  }
-
-  // 用 batch 一次送出，省下十幾次來回。INSERT OR IGNORE 的原子去重不受影響。
-  const now = Date.now();
-  const stmt = env.DB.prepare(
-    "INSERT OR IGNORE INTO seen (guid, aid, cat, title, link, head, ts) VALUES (?, ?, ?, ?, ?, ?, ?)",
-  );
-  const results = await env.DB.batch(
-    items.map((i) =>
-      stmt.bind(i.guid, i.aid, category, i.title, i.link, i.head, now),
-    ),
-  );
-  const added = results.reduce((n, r) => n + (r.meta.changes ?? 0), 0);
-
-  const msg = `${category}: parsed ${items.length}, new ${added}`;
-  console.log(msg);
-  return msg;
-}
-
-// ---------------------------------------------------------------------------
-// 推播：依編輯清單決定推哪幾則
-// ---------------------------------------------------------------------------
-
-type PendingRow = {
-  aid: string;
-  source: string;
-  slug: string;
-  title: string;
-  url: string;
-  pub_at: number | null;
-  rss_title: string | null;
-  head: string | null;
-};
-
-/**
- * 抓一份編輯清單，把上面的文章記進 picked。**不送任何訊息。**
- *
- * 推播由 drain() 負責，而且全系統只有一個 Cron 會呼叫 drain()——
- * 理由見 CRON_JOBS 的註解。
- *
- * 去重完全靠 picked.aid 主鍵 + INSERT OR IGNORE，不使用任何時間窗：
- *  - 三份清單共用 picked 表，同一篇文章不論被哪份先看到都只會推一次
- *  - 某次執行失敗時漏掉的項目下次自動補上，不會永久遺失
- * 後者對每天／每週才跑一次的圖表與特派特別重要——用「過去 24 小時」這類條件的話，
- * 一次失敗就是永久漏稿。
- */
-async function discover(env: Env, key: SourceKey): Promise<string> {
-  const src = SOURCES[key];
-
-  const res = await fetch(src.url, { headers: { "user-agent": UA } });
-  if (!res.ok) {
-    console.error(`${key}: page returned ${res.status}`);
-    return `${key}: page error ${res.status}`;
-  }
-
-  const picks = parseList(await res.text());
-  if (!picks.length) {
-    // 本方案最可能的長期故障模式：頁面改版後 jsMainList 消失，
-    // 解析回傳 0 則卻不會拋錯，頻道就此安靜。必須留下痕跡才看得見。
-    console.error(`${key}: parsed 0 items — 清單頁結構可能已變更`);
-    return `${key}: parsed 0 (structure changed?)`;
-  }
-
-  const seedOnly = env.SEED_ONLY === "1";
-  const now = Date.now();
-
-  // 灌種模式直接把 pushed_at 填成現在，等於「記錄下來但視為已推」。
-  // 首次上線時三份清單合計約 60 則（圖表橫跨 50 天、特派橫跨 88 天），
-  // 少了這步會在上線瞬間全部推出。
-  const ins = env.DB.prepare(
-    "INSERT OR IGNORE INTO picked (aid, source, slug, title, url, pub_at, found_at, pushed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-  );
-  const results = await env.DB.batch(
-    picks.map((p) =>
-      ins.bind(
-        p.aid,
-        key,
-        p.slug,
-        p.title,
-        p.url,
-        p.pubAt,
-        now,
-        seedOnly ? now : null,
-      ),
-    ),
-  );
-  const added = results.reduce((n, r) => n + (r.meta.changes ?? 0), 0);
-
-  const msg = `${key}: parsed ${picks.length}, new ${added}${seedOnly ? " (seed mode)" : ""}`;
-  console.log(msg);
-  return msg;
-}
-
-/**
- * 把 picked 裡還沒推播的項目送出去。**不碰任何 HTML／XML 解析。**
- *
- * 只有一條 Cron 會呼叫這個函式，這是並行安全的唯一依據：
- * 「撈 pending → 送出 → 標記 pushed_at」是先查再寫，兩個實例同時跑就會各自撈到
- * 同一批而重複推播（picked.aid 主鍵只擋得住重複「記錄」，擋不住重複「推播」）。
- * 與其用鎖或租約把每一則的認領變成原子操作，不如讓同時只存在一個 drainer。
- *
- * 查詢不依 source 過濾是刻意的：圖表與特派的項目也由這裡撿走，
- * 所以它們的失敗重試是 5 分鐘一次，而不是等下一次每天／每週的 Cron。
- */
-async function drain(env: Env): Promise<string> {
-  // 灌種模式下所有列在寫入時就已標記為已推，這裡直接省下一次查詢
-  if (env.SEED_ONLY === "1") return "drain: skipped (seed mode)";
-
-  const startedAt = Date.now();
-
-  // 排序第一順位是 tries：送失敗過的自動沉到隊尾，新聞永遠排在它前面。
-  // 沒有這一欄的話，一則永遠送不出去的會卡在隊首把整條隊列堵死（見 002 migration）。
-  // tries 相同時依 found_at；found_at 也相同（同一批）時再依 pub_at，
-  // 讓同批的多則在頻道上維持發稿時序。
-  const pending = await env.DB.prepare(
-    `SELECT p.aid, p.source, p.slug, p.title, p.url, p.pub_at,
-            s.title AS rss_title, s.head AS head
-       FROM picked p
-       LEFT JOIN seen s ON s.aid = p.aid
-      WHERE p.pushed_at IS NULL
-      ORDER BY p.tries, p.found_at, p.pub_at
-      LIMIT ?`,
-  )
-    .bind(MAX_SEND)
-    .all<PendingRow>();
-
-  let sent = 0;
-  let waiting = 0;
-
-  for (const row of pending.results) {
-    // 寧可少送幾則，也不要跑進下一輪的時間——重疊就是重複推播
-    if (Date.now() - startedAt > MAX_DRAIN_MS) {
-      console.error(`drain: hit ${MAX_DRAIN_MS}ms wall clock, stopping early`);
-      break;
-    }
-
-    const head = row.head ?? "";
-
-    // 查不到訊頭時要不要再等一輪？特稿不必等，它永遠不會進 RSS。
-    // 即時新聞則可能只是剛發布、RSS 還沒輪到，值得等下一輪。
-    if (!head && !isFeature(row.aid)) {
-      const age = row.pub_at === null ? Infinity : startedAt - row.pub_at;
-      if (age < WAIT_MS) {
-        waiting++;
-        continue;
-      }
-    }
-
-    const feed = BY_URL_SLUG.get(row.slug);
-
-    try {
-      await sendMessage(env, {
-        emoji: feed?.[2] ?? "📰",
-        // 標題優先用 RSS 的版本（與 feed 一致），查不到才用清單頁上的
-        title: row.rss_title || row.title,
-        link: row.url,
-        head,
-        category: feed?.[0] ?? "新聞",
-        tag: SOURCES[row.source as SourceKey]?.tag ?? "",
-      });
-      // 送出成功才標記。失敗時 pushed_at 維持 NULL，下一輪自動重試，不會靜默漏稿。
-      await env.DB.prepare("UPDATE picked SET pushed_at = ? WHERE aid = ?")
-        .bind(Date.now(), row.aid)
-        .run();
-      sent++;
-      await sleep(GAP_MS);
-    } catch (err) {
-      console.error(`send failed (aid ${row.aid}): ${String(err)}`);
-      // 記一次失敗讓它沉到隊尾，然後仍然 break——失敗通常是系統性的
-      // （token 失效、頻道權限），繼續送只會連錯。
-      // 但因為排序看 tries，下一輪換別則排頭，不會像以前那樣卡死。
-      //
-      // 刻意不設「試 N 次就放棄」的門檻：系統性故障會讓每一則都累積 tries，
-      // 有門檻的話一次兩小時的故障就等於把整批新聞永久丟掉。
-      // 真的卡住的那幾則靠 /stats 的 stuck 計數看得見，人工處理。
-      await env.DB.prepare("UPDATE picked SET tries = tries + 1 WHERE aid = ?")
-        .bind(row.aid)
-        .run();
-      break;
-    }
-  }
-
-  const msg = `drain: sent ${sent}${waiting ? `, waiting ${waiting}` : ""}`;
-  console.log(msg);
-  return msg;
-}
-
-// ---------------------------------------------------------------------------
-// Worker 入口
-// ---------------------------------------------------------------------------
-
-/**
- * Cron 排程字串 → 這一輪要抓哪份清單、要不要順便推播。
- * 字串必須與 wrangler.jsonc 的 crons 完全一致。
- * 沒對應到的（也就是每分鐘那條）一律跑 scan。
- *
- * **drain 只有一條，這是刻意的，不要再加第二條。**
- * 週日 UTC 00:00 這三條會同時觸發（0 可被 5 整除），如果每條都會推播，
- * 三個實例會各自撈到同一批 pending，同一則就被送三次。
- * 讓同時只存在一個 drainer 是最省的解法：不需要鎖、不需要租約欄位，
- * 也不必依賴「把分鐘數錯開」這種一加新 Cron 就會破功的算術。
- *
- * 圖表與特派不會因此變慢：drain 的查詢不依 source 過濾，
- * 它們在 00:00 被記錄下來後，最多 5 分鐘就會被每 5 分鐘那條撿走。
- */
-const CRON_JOBS: Record<string, { src: SourceKey; drain: boolean }> = {
-  "*/5 * * * *": { src: "headlines", drain: true },
-  "0 0 * * *": { src: "chart", drain: false }, // UTC 00:00 = 台北 08:00
-  "0 0 * * SUN": { src: "world", drain: false }, // 每週日台北 08:00
-};
-
-/**
- * 每分鐘那條，對不到 CRON_JOBS 就是它。
- * 獨立成常數是為了讓「真的對不到任何一條」能被認出來並留下紀錄——
- * 否則排程字串打錯只會安靜地全部掉進 scan()，那份清單永遠不會被抓。
- */
-const SCAN_CRON = "* * * * *";
-
-const TEXT_HEADERS = { "content-type": "text/plain; charset=utf-8" };
-
-export default {
-  /** Cron 排程觸發 */
-  async scheduled(
-    controller: ScheduledController,
-    env: Env,
-    ctx: ExecutionContext,
-  ): Promise<void> {
-    const job = CRON_JOBS[controller.cron];
-
-    // 排程字串必須與 wrangler.jsonc 逐字一致。對不上的話這裡會靜默退回 scan()，
-    // 那份清單就永遠不會被抓而且不會報錯——所以對不上就要留下紀錄。
-    if (!job && controller.cron !== SCAN_CRON) {
-      console.error(
-        `unknown cron "${controller.cron}" — 與 CRON_JOBS 對不上，這次當成 scan 處理`,
-      );
-    }
-
-    // waitUntil 讓節流的等待時間不會被提前中斷
-    ctx.waitUntil(
-      job
-        ? (async () => {
-            await discover(env, job.src);
-            if (job.drain) await drain(env);
-          })()
-        : scan(env),
-    );
-  },
-
-  /** HTTP 入口：手動觸發與健康檢查 */
-  async fetch(request: Request, env: Env): Promise<Response> {
-    const url = new URL(request.url);
-
-    if (url.pathname === "/run") {
-      return new Response(await scan(env), { headers: TEXT_HEADERS });
-    }
-
-    // 只抓清單頁記進 picked，不推播——推播一律走 /push，與 Cron 的分工一致
-    if (url.pathname === "/pick") {
-      const src = url.searchParams.get("src") ?? "headlines";
-      if (!(src in SOURCES)) {
-        return new Response(
-          `unknown src: ${src}\n可用值: ${Object.keys(SOURCES).join(", ")}`,
-          { status: 400, headers: TEXT_HEADERS },
-        );
-      }
-      return new Response(await discover(env, src as SourceKey), {
-        headers: TEXT_HEADERS,
-      });
-    }
-
-    // 手動推播。注意：每 5 分鐘的 Cron 也會 drain，兩者同時跑就會重複推播，
-    // 所以這個端點只適合在本機或確定 Cron 沒在跑的時候用。
-    if (url.pathname === "/push") {
-      return new Response(await drain(env), { headers: TEXT_HEADERS });
-    }
-
-    if (url.pathname === "/stats") {
-      // stuck = 還沒推出去而且已經失敗三次以上的。因為不設放棄門檻，
-      // 這種項目會一直留在隊尾重試，只能靠這個數字看見它們的存在。
-      const row = await env.DB.prepare(
-        `SELECT COUNT(*) AS tracked,
-                SUM(CASE WHEN pushed_at IS NOT NULL THEN 1 ELSE 0 END) AS pushed,
-                SUM(CASE WHEN pushed_at IS NULL AND tries >= 3 THEN 1 ELSE 0 END) AS stuck,
-                MAX(pushed_at) AS latest
-           FROM picked`,
-      ).first<{
-        tracked: number;
-        pushed: number | null;
-        stuck: number | null;
-        latest: number | null;
-      }>();
-      const bySource = await env.DB.prepare(
-        "SELECT source, COUNT(*) AS n FROM picked WHERE pushed_at IS NOT NULL GROUP BY source",
-      ).all<{ source: string; n: number }>();
-
-      return Response.json({
-        tracked: row?.tracked ?? 0,
-        pushed: row?.pushed ?? 0,
-        stuck: row?.stuck ?? 0,
-        latest: row?.latest ? new Date(row.latest).toISOString() : null,
-        bySource: Object.fromEntries(
-          bySource.results.map((r) => [r.source, r.n]),
-        ),
-      });
-    }
-
-    return new Response("alive", { headers: TEXT_HEADERS });
-  },
-};
-```
-
----
-
-## 檔案 2：`wrangler.jsonc`
+## `wrangler.jsonc`
 
 Workers 設定檔。**你必須修改 `database_id`**（步驟 5 取得）。
 
-四條 Cron 的字串必須與 `src/index.ts` 裡 `CRON_JOBS` 的 key 逐字一致，改一邊就要改另一邊。
+四條 Cron 的字串必須與 `src/config.ts` 裡 `CRON_JOBS` 的 key 逐字一致，改一邊就要改另一邊。`npm test` 會檢查這件事。
 
-```jsonc
-{
-  // Worker 名稱，會成為 *.workers.dev 子網域的一部分
-  "name": "cna-telegram",
-
-  // 進入點
-  "main": "src/index.ts",
-
-  // 相容性日期：決定 Workers runtime 的行為版本。設定後就不要隨意往前調，
-  // 否則可能踩到 runtime 行為變更。要更新時請先在本機測過。
-  "compatibility_date": "2026-08-01",
-
-  // Cron 排程（UTC 時區，最小粒度 1 分鐘）
-  //
-  // 解析與推播刻意分開：解析 XML／HTML 的工作不推播，推播的工作完全不碰解析，
-  // 這樣每次觸發都能待在免費方案的 10 ms CPU 上限內。
-  // 排程字串要與 src/index.ts 的 CRON_JOBS 完全一致，改這裡就要一起改那裡。
-  //
-  //   "* * * * *"    每分鐘掃一個 RSS 分類建立訊頭查找表，不推播
-  //                  11 個分類輪詢 → 每個分類約 11 分鐘掃一次
-  //   "*/5 * * * *"  聚焦。該頁約每小時更新 2 則，5 分鐘是 24 倍超取樣
-  //                  **這是唯一會推播的一條**
-  //   "0 0 * * *"    新聞圖表。UTC 00:00 = 台北 08:00。只記錄，不推播
-  //   "0 0 * * SUN"  特派看世界。每週日台北 08:00（台灣無日光節約時間，換算固定）
-  //                  只記錄，不推播
-  //
-  // 星期欄位務必用 SUN 這種三字母縮寫，不要用數字。Cloudflare 的 weekday 是
-  // 1-7 而且 **1 = 週日**，與多數 cron 系統（0 = 週日、6 = 週六）不同：
-  // 寫 "0" 會被 API 直接拒絕（invalid cron string），而直覺改成 "7" 不會報錯，
-  // 它會安靜地變成週六。官方文件也建議用縮寫避開這個歧義。
-  //
-  // 為什麼只有一條推播：週日 UTC 00:00 這四條會同時觸發（0 可被 5 整除）。
-  // 「撈出還沒推的 → 送出 → 標記已推」是先查再寫，兩個實例同時跑會各自撈到
-  // 同一批，同一則就被送兩三次。讓同時只存在一個推播者是最省的解法。
-  // 圖表與特派不會因此變慢——它們記錄下來後，最多 5 分鐘就被上面那條撿走。
-  //
-  // 免費方案每帳號最多 5 個 Cron Trigger，這裡用 4 個，保留 1 個餘裕。
-  // 要加新 Cron 的話，除非你確定它永遠不會與 "*/5" 同分鐘觸發，否則不要讓它推播。
-  "triggers": {
-    "crons": ["* * * * *", "*/5 * * * *", "0 0 * * *", "0 0 * * SUN"],
-  },
-
-  // D1 資料庫綁定
-  // binding       = 程式裡 env.DB 的名稱，不要改
-  // database_name = 你執行 `wrangler d1 create cna` 時給的名稱
-  // database_id   = 上述指令回傳的 UUID，請填進去
-  "d1_databases": [
-    {
-      "binding": "DB",
-      "database_name": "cna",
-      "database_id": "請填入 wrangler d1 create 回傳的 database_id",
-    },
-  ],
-
-  // 非敏感的環境變數（敏感的請用 wrangler secret put）
-  // SEED_ONLY = "1" → 只寫入去重資料庫、不推播，用於首次上線灌種
-  // SEED_ONLY = "0" → 正常推播
-  //
-  // 這裡固定放正式值 "0"。灌種請用 `npm run deploy:seed`（以 --var 覆蓋成 "1"），
-  // 不要把預設值改回 "1"：那樣之後任何一次不帶 --var 的 `npm run deploy`
-  // 都會靜默退回灌種模式，頻道停止推播而且不會報錯。
-  "vars": {
-    "SEED_ONLY": "0",
-  },
-
-  // 開啟可觀測性，這樣 dashboard 的 Logs 才看得到 console.log 輸出
-  "observability": {
-    "enabled": true,
-  },
-}
-```
-
----
-
-## 檔案 3：`schema.sql`
+## `schema.sql`
 
 **全新環境用這一份就夠了**，它已經包含 `migrations/` 兩份的結果，不要再去跑 migrations。
 
 兩張表：`seen` 是 RSS 掃描的產物（去重紀錄兼訊頭查找表），`picked` 記錄三份編輯清單看過與推播了哪些文章。
 
-```sql
--- 全新環境的完整資料表結構。
--- 已存在的資料庫請改用 migrations/ 下的檔案逐步套用，不要跑這一份。
-
--- ---------------------------------------------------------------------------
--- seen：RSS 掃描的產物，身兼兩個角色
---  1. 去重紀錄（原本的用途）
---  2. 「文章 ID → 發稿訊頭」查找表（推播時用）
---
--- 第 2 點是掃描與推播分離後的必要設計：RSS feed 只保留 4～5 小時
--- （實測國際/產經/生活為 4.1～4.5 小時），而編輯清單每天／每週才檢查一次，
--- 推播當下再去抓 feed 一定來不及。所以訊頭必須在掃描當下就落地保存。
--- ---------------------------------------------------------------------------
-
-CREATE TABLE IF NOT EXISTS seen (
-  guid  TEXT    PRIMARY KEY,   -- RSS 的 <guid>，格式 CNA/2026-09-16/202609160377
-  aid   TEXT,                  -- 12 位文章 ID，取自 guid 尾碼，與編輯清單頁 join 用
-  cat   TEXT    NOT NULL,      -- 分類名稱
-  title TEXT,
-  link  TEXT,                  -- 原文連結
-  head  TEXT,                  -- 發稿訊頭。只存訊頭不存完整前言：前言由 Telegram
-                               -- 預覽卡片從 og:description 呈現，訊頭則是預覽不會顯示的那塊
-  ts    INTEGER NOT NULL       -- 寫入時間（Unix 毫秒）
-);
-
--- 推播時以 aid 查訊頭，沒有索引會全表掃描。
--- D1 免費額度是按「掃描了幾列」計費的，全表掃描會快速吃光額度。
-CREATE INDEX IF NOT EXISTS seen_aid    ON seen (aid);
-CREATE INDEX IF NOT EXISTS seen_ts     ON seen (ts);
-CREATE INDEX IF NOT EXISTS seen_cat_ts ON seen (cat, ts);
-
--- ---------------------------------------------------------------------------
--- picked：記錄三個編輯清單（聚焦／新聞圖表／特派看世界）看過與推播了哪些文章。
---
--- aid 設為 PRIMARY KEY 是整個機制的核心，一次解決三個問題：
---  1. 去重 —— INSERT OR IGNORE 是原子操作，不需要「先查再寫」
---  2. 跨來源去重 —— 三個清單共用這張表，同一篇文章不論被哪個清單先看到，
---     另一個的寫入都會被主鍵擋下，絕不會推兩次
---  3. 競態安全 —— 多個 Worker 實例同時寫入同一個 aid 也只有一個會成功
---
--- 刻意不使用「過去 N 小時」這類時間窗來判斷該不該推：
--- 圖表清單橫跨 50 天、特派橫跨 88 天，且分別每天／每週才跑一次。
--- 用時間窗的話某次執行失敗就永久漏稿；用去重表則下次自動補上。
--- ---------------------------------------------------------------------------
-
-CREATE TABLE IF NOT EXISTS picked (
-  aid       TEXT PRIMARY KEY,   -- 12 位文章 ID
-  source    TEXT NOT NULL,      -- 'headlines' | 'chart' | 'world'（最先看到它的來源）
-  slug      TEXT NOT NULL,      -- 網址分類代碼 aipl / aopl / acn …，用來還原分類名稱
-  title     TEXT NOT NULL,
-  url       TEXT NOT NULL,
-  pub_at    INTEGER,            -- 發布時間（來自 <time datetime>），判斷要不要等 RSS 補前言
-  found_at  INTEGER NOT NULL,   -- 我們第一次看到它的時間
-  pushed_at INTEGER,            -- NULL = 尚未推播。送出失敗時維持 NULL，下一輪自動重試
-  tries     INTEGER NOT NULL DEFAULT 0
-                                -- 送出失敗過幾次。排序的第一順位，讓失敗過的沉到隊尾，
-                                -- 否則一則永遠送不出去的會卡在隊首，把後面所有新聞堵死
-);
-
--- 排序是 (tries, found_at, pub_at)，索引要跟著走，否則每次都得排序整張表。
-CREATE INDEX IF NOT EXISTS picked_pending ON picked (pushed_at, tries, found_at);
-```
-
----
-
-## 檔案 4：`migrations/001_picked.sql`
+## `migrations/001_picked.sql`
 
 **全新環境不需要這份。** 只有原本在跑「11 分類無差別推播」那個舊版、資料不能刪的人才要套用。
 
 它新增 `picked` 表，並替 `seen` 補上 `aid`／`link`／`head` 三個欄位。最後那段 `UPDATE` 是必要的：`scan()` 用 `INSERT OR IGNORE`，既有的 `guid` 會被直接忽略，舊列的 `aid` 永遠不會被後續掃描補上，不回填的話 join 會永遠對不上。
 
-```sql
--- 001: 改用中央社編輯清單（聚焦／新聞圖表／特派看世界）決定推播內容
---
--- 套用方式（本機與正式各跑一次）：
---   npx wrangler d1 execute cna --local  --file=./migrations/001_picked.sql
---   npx wrangler d1 execute cna --remote --file=./migrations/001_picked.sql
---
--- 注意：SQLite 的 ALTER TABLE ADD COLUMN 不支援 IF NOT EXISTS，
--- 重複執行本檔會在第一行就噴 "duplicate column name: aid" 而中止。
--- 這是一次性 migration，正常情況只需執行一次。
-
--- ---------------------------------------------------------------------------
--- seen 表：原本只存去重紀錄，現在要兼任「文章 ID → 前言」查找表。
---
--- 推播時機與掃描時機分離之後，前言必須在掃描當下就存下來：
--- RSS feed 只保留 4～5 小時（實測國際/產經/生活為 4.1～4.5 小時），
--- 而圖表每天、特派每週才檢查一次，推播當下再去抓 feed 一定來不及。
--- ---------------------------------------------------------------------------
-
-ALTER TABLE seen ADD COLUMN aid  TEXT;   -- 12 位文章 ID，取自 guid 尾碼，與清單頁 join 用
-ALTER TABLE seen ADD COLUMN link TEXT;   -- 原文連結
-ALTER TABLE seen ADD COLUMN head TEXT;   -- 發稿訊頭「（中央社記者OOO台北16日電）」
-                                         -- 只存訊頭不存完整前言：前言由 Telegram 預覽卡片
-                                         -- 從 og:description 呈現，而訊頭是預覽永遠不會顯示的那塊
-
--- 清單頁查訊頭時唯一會用到的索引。沒有它每次推播都要全表掃描，
--- 而 D1 免費額度是按「掃描了幾列」計費的。
-CREATE INDEX IF NOT EXISTS seen_aid ON seen (aid);
-
--- 回填既有資料的 aid。
---
--- 這步不能省：scan() 用的是 INSERT OR IGNORE，既有的 guid 會被直接忽略，
--- 所以舊列的 aid 永遠不會被後續掃描補上，join 時會永遠對不上。
--- guid 格式為 CNA/2026-09-16/202609160377，末 12 碼就是文章 ID。
--- （訊頭無法回填，當初沒存前言。這些舊列只影響上線當下那幾小時的項目，
---   而那些項目會在灌種時被標記為已推，不會實際送出。）
---
--- 判斷末 12 碼是不是數字，刻意用數值比較而非 GLOB '[0-9][0-9]...'：
--- SQLite 對 12 個連續字元類會直接噴 "LIKE or GLOB pattern too complex"，
--- 整個 migration 會在這裡中止。合法的文章 ID 形如 202609160377，
--- 必定遠大於 1e11；非數字字串 CAST 後會變成很小的值而被排除。
-UPDATE seen
-   SET aid = substr(guid, length(guid) - 11)
- WHERE aid IS NULL
-   AND length(guid) >= 12
-   AND CAST(substr(guid, length(guid) - 11) AS INTEGER) >= 100000000000;
-
--- ---------------------------------------------------------------------------
--- picked 表：記錄三個編輯清單看過哪些文章、推播了哪些。
---
--- aid 設為 PRIMARY KEY 是整個機制的核心，一次解決三個問題：
---  1. 去重 —— INSERT OR IGNORE 是原子操作，不需要「先查再寫」
---  2. 跨來源去重 —— 三個清單共用這張表，同一篇文章不論被哪個清單先看到，
---     另一個的寫入都會被主鍵擋下，絕不會推兩次
---  3. 競態安全 —— 多個 Worker 實例同時寫入同一個 aid 也只有一個會成功
---
--- 刻意不使用「過去 N 小時」這類時間窗來判斷該不該推：
--- 圖表清單橫跨 50 天、特派橫跨 88 天，且兩者分別每天／每週才跑一次。
--- 用時間窗的話，某次執行失敗就會永久漏稿；用去重表則下次自動補上。
--- ---------------------------------------------------------------------------
-
-CREATE TABLE IF NOT EXISTS picked (
-  aid       TEXT PRIMARY KEY,   -- 12 位文章 ID
-  source    TEXT NOT NULL,      -- 'headlines' | 'chart' | 'world'（最先看到它的來源）
-  slug      TEXT NOT NULL,      -- 網址分類代碼 aipl / aopl / acn …，用來還原分類名稱
-  title     TEXT NOT NULL,      -- 清單頁上的標題（有 RSS 前言時改用 RSS 的標題）
-  url       TEXT NOT NULL,
-  pub_at    INTEGER,            -- 發布時間（來自 <time datetime>），判斷要不要等 RSS 補前言
-  found_at  INTEGER NOT NULL,   -- 我們第一次看到它的時間
-  pushed_at INTEGER             -- NULL = 尚未推播。送出失敗時維持 NULL，下一輪自動重試
-);
-
--- 每次推播都要查「還沒推的有哪些」，這個複合索引讓它不必全表掃描。
-CREATE INDEX IF NOT EXISTS picked_pending ON picked (pushed_at, found_at);
-```
-
----
-
-## 檔案 5：`migrations/002_tries.sql`
+## `migrations/002_tries.sql`
 
 **全新環境不需要這份。**
 
 它替 `picked` 加上 `tries` 欄位並重建索引，讓送不出去的稿件沉到隊尾而不是卡死整條隊列。理由見〈[運作方式](#運作方式)〉的「去重與重試」。
 
-```sql
--- 002: picked 加上 tries 欄位，讓送不出去的那一則不會卡死整條隊列
---
--- 套用方式（本機與正式各跑一次）：
---   npx wrangler d1 execute cna --local  --file=./migrations/002_tries.sql
---   npx wrangler d1 execute cna --remote --file=./migrations/002_tries.sql
---
--- 注意：SQLite 的 ALTER TABLE ADD COLUMN 不支援 IF NOT EXISTS，
--- 重複執行本檔會在第一行就噴 "duplicate column name: tries" 而中止。
--- 這是一次性 migration，正常情況只需執行一次。
+## `package.json`
 
--- ---------------------------------------------------------------------------
--- 原本 drain 的排序固定是 ORDER BY found_at，而任何送出錯誤都會 break。
--- 兩者合起來的後果是：只要有一則永遠送不出去（例如 Telegram 回 400
--- can't parse entities），它就永遠排在隊首，每輪撈出來、失敗、break，
--- 之後的所有新聞再也不會送出，而且不會拋錯——頻道就此安靜。
---
--- 加上 tries 之後排序改成 (tries, found_at, pub_at)：失敗過的自動沉到隊尾，
--- 新聞永遠排在它前面，所以卡不住。
--- ---------------------------------------------------------------------------
-
-ALTER TABLE picked ADD COLUMN tries INTEGER NOT NULL DEFAULT 0;
-
--- 索引要跟著新的排序走，否則每次 drain 都得排序整張表。
--- D1 免費額度是按「掃描了幾列」計費的。
-DROP INDEX IF EXISTS picked_pending;
-CREATE INDEX IF NOT EXISTS picked_pending ON picked (pushed_at, tries, found_at);
-```
-
----
-
-## 檔案 6：`package.json`
-
-沒有執行期相依套件，`devDependencies` 只有 wrangler 與型別定義。
+沒有執行期相依套件。`devDependencies` 是 wrangler、型別定義與測試用的 vitest，都不會進到部署的 bundle。
 
 `db:migrate*` 那幾條全新環境用不到。`db:purge` 只清 `seen`，**不會動 `picked`**——那是去重表，清掉舊列等於讓那些文章有機會被重推。
 
-```json
-{
-  "name": "cna-telegram",
-  "version": "1.0.0",
-  "private": true,
-  "scripts": {
-    "dev": "wrangler dev --test-scheduled",
-    "deploy": "wrangler deploy",
-    "deploy:seed": "wrangler deploy --var SEED_ONLY:1",
-    "deploy:prod": "wrangler deploy --var SEED_ONLY:0",
-    "tail": "wrangler tail",
-    "db:init": "wrangler d1 execute cna --remote --file=./schema.sql",
-    "db:init:local": "wrangler d1 execute cna --local --file=./schema.sql",
-    "db:migrate": "wrangler d1 execute cna --remote --file=./migrations/001_picked.sql",
-    "db:migrate:local": "wrangler d1 execute cna --local --file=./migrations/001_picked.sql",
-    "db:migrate:002": "wrangler d1 execute cna --remote --file=./migrations/002_tries.sql",
-    "db:migrate:002:local": "wrangler d1 execute cna --local --file=./migrations/002_tries.sql",
-    "db:count": "wrangler d1 execute cna --remote --command=\"SELECT source, COUNT(*) AS n, SUM(CASE WHEN pushed_at IS NULL THEN 1 ELSE 0 END) AS pending FROM picked GROUP BY source ORDER BY n DESC\"",
-    "db:recent": "wrangler d1 execute cna --remote --command=\"SELECT datetime(pushed_at/1000,'unixepoch','+8 hours') AS t, source, slug, title FROM picked WHERE pushed_at IS NOT NULL ORDER BY pushed_at DESC LIMIT 10\"",
-    "db:nohead": "wrangler d1 execute cna --remote --command=\"SELECT p.source, COUNT(*) AS n FROM picked p LEFT JOIN seen s ON s.aid=p.aid WHERE p.pushed_at IS NOT NULL AND (s.head IS NULL OR s.head='') GROUP BY p.source\"",
-    "db:stuck": "wrangler d1 execute cna --remote --command=\"SELECT tries, source, slug, title, url FROM picked WHERE pushed_at IS NULL AND tries > 0 ORDER BY tries DESC LIMIT 20\"",
-    "db:purge": "wrangler d1 execute cna --remote --command=\"DELETE FROM seen WHERE ts < (unixepoch()-7776000)*1000\"",
-    "typecheck": "tsc --noEmit"
-  },
-  "devDependencies": {
-    "@cloudflare/workers-types": "^5.20260801.1",
-    "typescript": "^5.6.0",
-    "wrangler": "^4.0.0"
-  }
-}
-```
+## 其他
 
----
-
-## 檔案 7：`tsconfig.json`
-
-```json
-{
-  "compilerOptions": {
-    "target": "es2022",
-    "lib": ["es2022"],
-    "module": "esnext",
-    "moduleResolution": "bundler",
-    "types": ["@cloudflare/workers-types"],
-    "strict": true,
-    "noEmit": true,
-    "skipLibCheck": true,
-    "isolatedModules": true,
-    "forceConsistentCasingInFileNames": true
-  },
-  "include": ["src/**/*.ts"]
-}
-```
-
----
-
-## 檔案 8：`.gitignore`
-
-```gitignore
-node_modules/
-.wrangler/
-dist/
-
-# 本機開發用的環境變數，絕對不要提交
-.dev.vars
-.env
-```
-
----
-
-## 檔案 9：`.dev.vars.example`
-
-複製成 `.dev.vars` 再填入真實值。
-
-```ini
-# 本機開發用。複製成 .dev.vars 後填入真實值。
-# .dev.vars 已列在 .gitignore，不會被提交。
-# 注意：這個檔案只在 `wrangler dev` 本機執行時生效，
-#       部署到正式環境的機密要用 `wrangler secret put` 設定。
-
-# TG_TOKEN 格式為 <8~10 位數字>:<35 碼英數字>，此處刻意留空避免觸發 secret scanning
-TG_TOKEN=
-TG_CHAT=@your_channel_name
-SEED_ONLY=1
-```
+- `tsconfig.json`：讓編輯器認得 Workers 與測試環境的型別
+- `vitest.config.mts`：測試設定，會把 `schema.sql` 套到測試用的 D1
+- `.gitignore`：排除 `node_modules`、`.wrangler` 與 `.dev.vars`
+- `.dev.vars.example`：複製成 `.dev.vars` 再填入真實值（僅本機測試用）
 
 ---
 
@@ -1894,33 +902,33 @@ SEED_ONLY=1
 
 ## 常見問題排查
 
-| 現象                                                      | 原因                            | 解法                                                                |
-| --------------------------------------------------------- | ------------------------------- | ------------------------------------------------------------------- |
-| `403: bot is not a member of the channel chat`            | Bot 沒被設為頻道管理員          | 回步驟 2-2                                                          |
-| `403: not enough rights to send text messages`            | 管理員權限沒勾「Post Messages」 | 回步驟 2-2 勾選                                                     |
-| `400: chat not found`                                     | `TG_CHAT` 值錯誤                | 公開頻道要帶 `@`；私人頻道是 `-100` 開頭的負數                      |
-| `401: Unauthorized`                                       | Token 錯了                      | `npx wrangler secret put TG_TOKEN` 重設                             |
-| `Error 1102 / exceededCpu`                                | 解析超過 10 ms CPU              | 先降 `MAX_ITEMS`（15 → 8）；清單頁那條降不了就升級 $5/月方案        |
-| `Too many subrequests`                                    | 單次觸發超過 50 個 subrequest   | 降低 `MAX_SEND`。注意 **D1 查詢也算 subrequest**，算式見該常數註解  |
-| `invalid cron string: 0 0 * * 0`                          | Cloudflare 的 weekday 是 1-7 且 1 = 週日 | 用 `SUN`，不要用 `0`；也不要改成 `7`，那是週六         |
-| `triggers ... only partially updated`                     | 上一列的連鎖後果：schedules 整批失敗 | 程式碼已上線但排程沒更新，修好 cron 字串後重新部署一次   |
-| `Error 1027`                                              | 超過每日 10 萬次請求            | 這個用途幾乎不可能發生，若發生請檢查是否有人在打你的公開端點        |
-| 某份清單從來沒被抓過                                      | 排程字串與 `CRON_JOBS` 對不上   | `npm run tail` 找 `unknown cron "..."`，把字串改成逐字一致          |
-| `D1_ERROR: no such table: picked`                         | 忘記在正式資料庫建表或跑 migration | 全新環境跑 `schema.sql`；舊版升級跑 `npm run db:migrate`         |
-| `no such column: tries`                                   | 先部署了新版程式才跑 migration  | `npm run db:migrate:002`，順序要反過來                              |
-| `duplicate column name: aid`／`: tries`                   | migration 重複執行              | 正常，代表已經套用過了，忽略即可                                    |
-| `Cannot read properties of undefined (reading 'prepare')` | `database_id` 沒填或填錯        | 檢查 `wrangler.jsonc`                                               |
-| 訊息出現 `&amp;` 之類的字                                 | 實體字元處理順序問題            | 檢查 `clean()` 裡 `&amp;` 是否放在最後一個 replace                  |
-| 訊息推了但格式跑掉                                        | 標題含 `<` `>` 等字元           | 確認 `escapeHtml()` 有被套用                                        |
-| 完全沒有任何日誌                                          | Cron 沒生效                     | Dashboard → Settings → Triggers 確認四條都在；或重新部署            |
-| **頻道安靜但沒有錯誤**                                    | 清單頁改版，`parseList()` 回傳 0 | 日誌找 `parsed 0 items — 清單頁結構可能已變更`，修 `parseList()`   |
-| **頻道安靜且 `stuck` > 0**                                | 有稿件一直送不出去              | `npm run db:stuck` 看是哪幾則與錯誤原因                             |
-| 同一則被推兩次                                            | 有第二條 Cron 也在推播          | `CRON_JOBS` 裡只能有一個 `drain: true`，理由見〈運作方式〉          |
-| 頻道被洗版                                                | 忘記灌種                        | 刪除頻道訊息，`npm run deploy:seed` 重新灌種                        |
-| 同一段前言出現兩次                                        | 本文又放了完整 `description`    | `parseItems()` 應只取 `RE_HEAD` 抽出的訊頭，前言交給預覽卡          |
-| 沒有預覽卡，訊息只剩標題和訊頭                            | Telegram 抓不到中央社的 og tag  | 多半是暫時性（卡片有快取）；持續發生檢查 `link_preview_options.url` |
-| 標題點不動                                                | 標題沒被 `<a>` 包住             | 檢查 `sendMessage()` 的 `text`，emoji 要在 `<a>` **外面**           |
-| 某些訊息沒有訊頭                                          | 特稿系列，本來就不進 RSS        | 正常。`npm run db:nohead` 看比例，特派接近 100% 是預期的            |
+| 現象                                                      | 原因                                     | 解法                                                                |
+| --------------------------------------------------------- | ---------------------------------------- | ------------------------------------------------------------------- |
+| `403: bot is not a member of the channel chat`            | Bot 沒被設為頻道管理員                   | 回步驟 2-2                                                          |
+| `403: not enough rights to send text messages`            | 管理員權限沒勾「Post Messages」          | 回步驟 2-2 勾選                                                     |
+| `400: chat not found`                                     | `TG_CHAT` 值錯誤                         | 公開頻道要帶 `@`；私人頻道是 `-100` 開頭的負數                      |
+| `401: Unauthorized`                                       | Token 錯了                               | `npx wrangler secret put TG_TOKEN` 重設                             |
+| `Error 1102 / exceededCpu`                                | 解析超過 10 ms CPU                       | 先降 `MAX_ITEMS`（15 → 8）；清單頁那條降不了就升級 $5/月方案        |
+| `Too many subrequests`                                    | 單次觸發超過 50 個 subrequest            | 降低 `MAX_SEND`。注意 **D1 查詢也算 subrequest**，算式見該常數註解  |
+| `invalid cron string: 0 0 * * 0`                          | Cloudflare 的 weekday 是 1-7 且 1 = 週日 | 用 `SUN`，不要用 `0`；也不要改成 `7`，那是週六                      |
+| `triggers ... only partially updated`                     | 上一列的連鎖後果：schedules 整批失敗     | 程式碼已上線但排程沒更新，修好 cron 字串後重新部署一次              |
+| `Error 1027`                                              | 超過每日 10 萬次請求                     | 這個用途幾乎不可能發生，若發生請檢查是否有人在打你的公開端點        |
+| 某份清單從來沒被抓過                                      | 排程字串與 `CRON_JOBS` 對不上            | `npm run tail` 找 `unknown cron "..."`，把字串改成逐字一致          |
+| `D1_ERROR: no such table: picked`                         | 忘記在正式資料庫建表或跑 migration       | 全新環境跑 `schema.sql`；舊版升級跑 `npm run db:migrate`            |
+| `no such column: tries`                                   | 先部署了新版程式才跑 migration           | `npm run db:migrate:002`，順序要反過來                              |
+| `duplicate column name: aid`／`: tries`                   | migration 重複執行                       | 正常，代表已經套用過了，忽略即可                                    |
+| `Cannot read properties of undefined (reading 'prepare')` | `database_id` 沒填或填錯                 | 檢查 `wrangler.jsonc`                                               |
+| 訊息出現 `&amp;` 之類的字                                 | 實體字元處理順序問題                     | 檢查 `clean()` 裡 `&amp;` 是否放在最後一個 replace                  |
+| 訊息推了但格式跑掉                                        | 標題含 `<` `>` 等字元                    | 確認 `escapeHtml()` 有被套用                                        |
+| 完全沒有任何日誌                                          | Cron 沒生效                              | Dashboard → Settings → Triggers 確認四條都在；或重新部署            |
+| **頻道安靜但沒有錯誤**                                    | 清單頁改版，`parseList()` 回傳 0         | 日誌找 `parsed 0 items — 清單頁結構可能已變更`，修 `parseList()`    |
+| **頻道安靜且 `stuck` > 0**                                | 有稿件一直送不出去                       | `npm run db:stuck` 看是哪幾則與錯誤原因                             |
+| 同一則被推兩次                                            | 有第二條 Cron 也在推播                   | `CRON_JOBS` 裡只能有一個 `drain: true`，理由見〈運作方式〉          |
+| 頻道被洗版                                                | 忘記灌種                                 | 刪除頻道訊息，`npm run deploy:seed` 重新灌種                        |
+| 同一段前言出現兩次                                        | 本文又放了完整 `description`             | `parseItems()` 應只取 `RE_HEAD` 抽出的訊頭，前言交給預覽卡          |
+| 沒有預覽卡，訊息只剩標題和訊頭                            | Telegram 抓不到中央社的 og tag           | 多半是暫時性（卡片有快取）；持續發生檢查 `link_preview_options.url` |
+| 標題點不動                                                | 標題沒被 `<a>` 包住                      | 檢查 `formatMessage()`，emoji 要在 `<a>` **外面**                   |
+| 某些訊息沒有訊頭                                          | 特稿系列，本來就不進 RSS                 | 正常。`npm run db:nohead` 看比例，特派接近 100% 是預期的            |
 
 ---
 
@@ -1928,15 +936,15 @@ SEED_ONLY=1
 
 以四條 Cron（每天約 1,730 次觸發）、每天約 400 則 RSS 新聞、約 40 則實際推播計算：
 
-| 項目             | 預估用量        | 免費額度      | 佔比      |
-| ---------------- | --------------- | ------------- | --------- |
-| Workers 請求數   | 約 1,730 次／日 | 100,000／日   | 1.7%      |
-| Workers CPU time | 約 3–6 ms／次   | 10 ms／次     | 30–60% ⚠️ |
-| subrequest（每 5 分鐘那條） | 最多 46／次 | 50／次   | 92% ⚠️    |
-| subrequest（其餘三條）      | 2–21／次   | 50／次        | 4–42%     |
-| D1 rows written  | 約 500／日      | 100,000／日   | 0.5%      |
-| D1 rows read     | 約 20,000／日   | 5,000,000／日 | 0.4%      |
-| D1 儲存          | 每年約 15 MB    | 5 GB          | ~0%       |
+| 項目                        | 預估用量        | 免費額度      | 佔比      |
+| --------------------------- | --------------- | ------------- | --------- |
+| Workers 請求數              | 約 1,730 次／日 | 100,000／日   | 1.7%      |
+| Workers CPU time            | 約 3–6 ms／次   | 10 ms／次     | 30–60% ⚠️ |
+| subrequest（每 5 分鐘那條） | 最多 46／次     | 50／次        | 92% ⚠️    |
+| subrequest（其餘三條）      | 2–21／次        | 50／次        | 4–42%     |
+| D1 rows written             | 約 500／日      | 100,000／日   | 0.5%      |
+| D1 rows read                | 約 20,000／日   | 5,000,000／日 | 0.4%      |
+| D1 儲存                     | 每年約 15 MB    | 5 GB          | ~0%       |
 
 **要盯的是 CPU time 與 subrequest 這兩項，其他距離上限都很遠。**
 
@@ -1973,11 +981,11 @@ pending SELECT                      1
 4. 回到 Worker → **Settings** → **Bindings** → **Add** → **D1 database** → 變數名稱填 `DB`，選 `cna`
 5. Worker → **Settings** → **Variables and Secrets** → 新增 `TG_TOKEN`（選 Secret 類型）、`TG_CHAT`、`SEED_ONLY`
 6. Worker → **Settings** → **Triggers** → **Cron Triggers** → **Add** → **四條都要加**：`* * * * *`、`*/5 * * * *`、`0 0 * * *`、`0 0 * * SUN`
-7. Worker → **Edit code** → 貼上 `src/index.ts` 內容 → **Deploy**
+7. 程式碼分成好幾個模組，網頁編輯器要貼的是打包後的單一檔案：本機執行 `npx wrangler deploy --dry-run --outdir dist`（只打包、不上傳），再到 Worker → **Edit code** → 貼上 `dist/index.js` 內容 → **Deploy**
 
-> 第 6 步的四條字串必須與 `src/index.ts` 裡 `CRON_JOBS` 的 key **逐字一致**，差一個空格就會讓那條排程掉進 `scan()` 分支，清單永遠不會被抓。
+> 第 6 步的四條字串必須與 `src/config.ts` 裡 `CRON_JOBS` 的 key **逐字一致**，差一個空格就會讓那條排程掉進 `scan()` 分支，清單永遠不會被抓。
 
-網頁編輯器不支援 TypeScript 型別檢查，貼進去前記得把型別註記處理好，或者直接改寫成 JavaScript。
+打包後已經是 JavaScript，不必再處理型別註記。
 
 ---
 
