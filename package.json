@@ -19,11 +19,14 @@
     "db:nohead": "wrangler d1 execute cna --remote --command=\"SELECT p.source, COUNT(*) AS n FROM picked p LEFT JOIN seen s ON s.aid=p.aid WHERE p.pushed_at IS NOT NULL AND (s.head IS NULL OR s.head='') GROUP BY p.source\"",
     "db:stuck": "wrangler d1 execute cna --remote --command=\"SELECT tries, source, slug, title, url FROM picked WHERE pushed_at IS NULL AND tries > 0 ORDER BY tries DESC LIMIT 20\"",
     "db:purge": "wrangler d1 execute cna --remote --command=\"DELETE FROM seen WHERE ts < (unixepoch()-7776000)*1000\"",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
   },
   "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.22.0",
     "@cloudflare/workers-types": "^5.20260801.1",
     "typescript": "^5.6.0",
+    "vitest": "~4.1.0",
     "wrangler": "^4.0.0"
   }
 }
