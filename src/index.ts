@@ -31,138 +31,26 @@
  * 不做 Telegram Instant View：那會讓全文在 Telegram 內重新上架，正是條款排除的那一項。
  */
 
-import { parseItems, parseList } from "./parse";
+import {
+  BY_URL_SLUG,
+  CRON_JOBS,
+  FEEDS,
+  GAP_MS,
+  isSourceKey,
+  MAX_DRAIN_MS,
+  MAX_ITEMS,
+  MAX_SEND,
+  SCAN_CRON,
+  SOURCES,
+  type SourceKey,
+  UA,
+  WAIT_MS,
+} from "./config";
+import { isFeature, parseItems, parseList } from "./parse";
 import type { Env, Outgoing } from "./types";
+import { escapeHtml, sleep, sumChanges } from "./util";
 
 export type { Env } from "./types";
-
-// ---------------------------------------------------------------------------
-// 型別定義
-// ---------------------------------------------------------------------------
-
-/**
- * 一個 RSS 分類。
- * emoji 只用於訊息開頭的視覺標記，不影響任何邏輯。
- * urlSlug 是中央社網址裡的分類代碼，編輯清單頁只給網址不給分類名稱，
- * 要靠它還原成分類與 emoji——放在同一個元組裡才不會跟上面兩欄各自漂移。
- */
-type Feed = [
-  category: string,
-  slug: string,
-  emoji: string,
-  urlSlug: string,
-];
-
-type SourceKey = "headlines" | "chart" | "world";
-
-// ---------------------------------------------------------------------------
-// 設定
-// ---------------------------------------------------------------------------
-
-/**
- * 中央社 RSS 分類。這 11 個是官方 /about/rss.aspx 提供的全部 feed，
- * 沒有「聚焦」之類的編輯清單 feed，所以那三份清單只能從網頁取得。
- *
- * 掃描這些 feed 的唯一目的是建立「文章 ID → 發稿訊頭」查找表，本身不推播任何東西。
- * urlSlug 對應關係由 208 筆 RSS 實際資料反推，11 對 11 一對一。
- */
-const FEEDS: Feed[] = [
-  ["政治", "politics", "🏛️", "aipl"],
-  ["國際", "intworld", "🌏", "aopl"],
-  ["兩岸", "mainland", "🌊", "acn"], // 海峽的地理意象。刻意不用國旗，那會變成政治表態
-  ["產經", "finance", "📈", "afe"],
-  ["科技", "technology", "💻", "ait"],
-  ["生活", "lifehealth", "🌿", "ahel"],
-  ["社會", "social", "🚨", "asoc"],
-  ["地方", "local", "📍", "aloc"],
-  ["文化", "culture", "🎨", "acul"],
-  ["運動", "sport", "🏅", "aspt"], // 用獎牌而非單一球類，才涵蓋得住綜合賽事
-  ["娛樂", "stars", "🎬", "amov"],
-];
-
-/** urlSlug → Feed。由 FEEDS 直接導出，確保只有一份真相 */
-const BY_URL_SLUG = new Map(FEEDS.map((f) => [f[3], f]));
-
-/**
- * 三份編輯清單。三者的 HTML 結構完全相同，所以這裡只是資料，不是三份程式碼。
- * tag 會加在訊息結尾：圖表稿與特稿跟文字稿是各自獨立的文章、各有各的 ID，
- * 去重擋不住「同事件不同文章」，標記能讓它讀起來是補充版本而不是系統推了兩次。
- */
-const SOURCES: Record<SourceKey, { url: string; tag: string }> = {
-  headlines: { url: "https://www.cna.com.tw/list/headlines.aspx", tag: "" },
-  chart: {
-    url: "https://www.cna.com.tw/topic/newstopic/4479.aspx",
-    tag: "📊 新聞圖表",
-  },
-  world: {
-    url: "https://www.cna.com.tw/topic/newstopic/4215.aspx",
-    tag: "🌍 特派看世界",
-  },
-};
-
-/** 每輪最多解析幾則 item。調高會增加 CPU 消耗，有撞到 Error 1102 的風險 */
-const MAX_ITEMS = 15;
-
-/**
- * 每輪最多推播幾則。
- *
- * 免費方案每次 invocation 上限 50 個 subrequest，而**D1 的每次查詢也算 subrequest**
- * （官方文件：「A subrequest is any request a Worker makes using the Fetch API or to
- * Cloudflare services like R2, KV, or D1」，D1 limits 頁的「Queries per Worker
- * invocation」也直接標注 read subrequest limits = Free 50）。只算 Telegram 呼叫會嚴重低估。
- *
- * 每 5 分鐘那條同時做 discover + drain，是預算最緊的一次 invocation。D1 文件沒寫清楚
- * batch 裡的每個 statement 算一次還是整批算一次，所以用悲觀假設抓：
- *
- *   清單頁 fetch                        1
- *   INSERT OR IGNORE × 20 則（batch）   20   （樂觀假設：1）
- *   pending SELECT                      1
- *   每則 sendMessage + UPDATE × 12     24
- *   ────────────────────────────────────
- *   合計                               46   （樂觀假設：27）
- *
- * 悲觀下仍留 4 個給 429 重試。吞吐量綽綽有餘：聚焦約 40 則／天，而 drain 每天跑
- * 288 次 × 12 = 3,456 則／天的容量。
- */
-const MAX_SEND = 12;
-
-/** 每則之間的間隔（毫秒）。Telegram 頻道大約每分鐘只接受 20 則訊息 */
-const GAP_MS = 3200;
-
-/**
- * 單次 drain 的牆鐘上限。
- * 必須遠小於 drain 那條 Cron 的間隔（300 秒），否則某輪被 429 退避拖太久時，
- * 下一輪會在它還沒跑完時啟動——兩個實例撈到同一批 pending 就會重複推播。
- * 正常情況是 12 × 3.2 秒 ≈ 38 秒，這條保險平時不會生效。
- */
-const MAX_DRAIN_MS = 200_000;
-
-/** 查不到訊頭時，最多等多久讓 RSS 掃描補上（每個分類 11 分鐘會輪到一次） */
-const WAIT_MS = 30 * 60_000;
-
-/**
- * 流水號 >= 此值者為特稿／專欄系列，永遠不會出現在即時新聞 RSS 裡。
- * 實證：連續兩天每分鐘掃描累積 505 篇 RSS 文章，3xxx 系列 0 篇。
- * 這條界線讓特稿不必白等 WAIT_MS——否則每週只跑一次的特派會被延後整整一週。
- */
-const FEATURE_SEQ = 3000;
-
-const UA = "cna-unofficial-telegram/1.0";
-
-// ---------------------------------------------------------------------------
-// 工具函式
-// ---------------------------------------------------------------------------
-
-const sleep = (ms: number): Promise<void> =>
-  new Promise((resolve) => setTimeout(resolve, ms));
-
-/** 轉義成 Telegram HTML parse_mode 可以安全接受的文字 */
-const escapeHtml = (s: string): string =>
-  s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-
-/** 文章 ID 末 4 碼是當日流水號，用來分辨即時新聞（0xxx）與特稿（3xxx 以上） */
-const isFeature = (aid: string): boolean =>
-  Number(aid.slice(-4)) >= FEATURE_SEQ;
 
 // ---------------------------------------------------------------------------
 // Telegram 推播
@@ -234,7 +122,7 @@ async function sendMessage(env: Env, msg: Outgoing, depth = 0): Promise<void> {
 async function scan(env: Env): Promise<string> {
   // 依「當前分鐘數」輪詢分類，讓每個分類平均被掃到（11 分類 → 每 11 分鐘一輪）
   const index = Math.floor(Date.now() / 60_000) % FEEDS.length;
-  const [category, slug] = FEEDS[index];
+  const { category, slug } = FEEDS[index];
 
   const res = await fetch(`https://feeds.feedburner.com/rsscna/${slug}`, {
     headers: { "user-agent": UA },
@@ -261,7 +149,7 @@ async function scan(env: Env): Promise<string> {
       stmt.bind(i.guid, i.aid, category, i.title, i.link, i.head, now),
     ),
   );
-  const added = results.reduce((n, r) => n + (r.meta.changes ?? 0), 0);
+  const added = sumChanges(results);
 
   const msg = `${category}: parsed ${items.length}, new ${added}`;
   console.log(msg);
@@ -335,7 +223,7 @@ async function discover(env: Env, key: SourceKey): Promise<string> {
       ),
     ),
   );
-  const added = results.reduce((n, r) => n + (r.meta.changes ?? 0), 0);
+  const added = sumChanges(results);
 
   const msg = `${key}: parsed ${picks.length}, new ${added}${seedOnly ? " (seed mode)" : ""}`;
   console.log(msg);
@@ -401,13 +289,13 @@ async function drain(env: Env): Promise<string> {
 
     try {
       await sendMessage(env, {
-        emoji: feed?.[2] ?? "📰",
+        emoji: feed?.emoji ?? "📰",
         // 標題優先用 RSS 的版本（與 feed 一致），查不到才用清單頁上的
         title: row.rss_title || row.title,
         link: row.url,
         head,
-        category: feed?.[0] ?? "新聞",
-        tag: SOURCES[row.source as SourceKey]?.tag ?? "",
+        category: feed?.category ?? "新聞",
+        tag: isSourceKey(row.source) ? SOURCES[row.source].tag : "",
       });
       // 送出成功才標記。失敗時 pushed_at 維持 NULL，下一輪自動重試，不會靜默漏稿。
       await env.DB.prepare("UPDATE picked SET pushed_at = ? WHERE aid = ?")
@@ -439,33 +327,6 @@ async function drain(env: Env): Promise<string> {
 // ---------------------------------------------------------------------------
 // Worker 入口
 // ---------------------------------------------------------------------------
-
-/**
- * Cron 排程字串 → 這一輪要抓哪份清單、要不要順便推播。
- * 字串必須與 wrangler.jsonc 的 crons 完全一致。
- * 沒對應到的（也就是每分鐘那條）一律跑 scan。
- *
- * **drain 只有一條，這是刻意的，不要再加第二條。**
- * 週日 UTC 00:00 這三條會同時觸發（0 可被 5 整除），如果每條都會推播，
- * 三個實例會各自撈到同一批 pending，同一則就被送三次。
- * 讓同時只存在一個 drainer 是最省的解法：不需要鎖、不需要租約欄位，
- * 也不必依賴「把分鐘數錯開」這種一加新 Cron 就會破功的算術。
- *
- * 圖表與特派不會因此變慢：drain 的查詢不依 source 過濾，
- * 它們在 00:00 被記錄下來後，最多 5 分鐘就會被每 5 分鐘那條撿走。
- */
-const CRON_JOBS: Record<string, { src: SourceKey; drain: boolean }> = {
-  "*/5 * * * *": { src: "headlines", drain: true },
-  "0 0 * * *": { src: "chart", drain: false }, // UTC 00:00 = 台北 08:00
-  "0 0 * * SUN": { src: "world", drain: false }, // 每週日台北 08:00
-};
-
-/**
- * 每分鐘那條，對不到 CRON_JOBS 就是它。
- * 獨立成常數是為了讓「真的對不到任何一條」能被認出來並留下紀錄——
- * 否則排程字串打錯只會安靜地全部掉進 scan()，那份清單永遠不會被抓。
- */
-const SCAN_CRON = "* * * * *";
 
 const TEXT_HEADERS = { "content-type": "text/plain; charset=utf-8" };
 
@@ -508,13 +369,13 @@ export default {
     // 只抓清單頁記進 picked，不推播——推播一律走 /push，與 Cron 的分工一致
     if (url.pathname === "/pick") {
       const src = url.searchParams.get("src") ?? "headlines";
-      if (!(src in SOURCES)) {
+      if (!isSourceKey(src)) {
         return new Response(
           `unknown src: ${src}\n可用值: ${Object.keys(SOURCES).join(", ")}`,
           { status: 400, headers: TEXT_HEADERS },
         );
       }
-      return new Response(await discover(env, src as SourceKey), {
+      return new Response(await discover(env, src), {
         headers: TEXT_HEADERS,
       });
     }

@@ -1,3 +1,4 @@
+import { FEATURE_SEQ } from "./config";
 import type { Item, Pick } from "./types";
 
 /** 預先編譯的正則。放在模組層級，避免每次呼叫都重新建立（省 CPU） */
@@ -49,6 +50,10 @@ export function clean(raw: string): string {
 export function extractAid(guid: string, link: string): string {
   return (guid.match(/(\d{12})$/) ?? link.match(/\/(\d{12})\.aspx/))?.[1] ?? "";
 }
+
+/** 文章 ID 末 4 碼是當日流水號，用來分辨即時新聞（0xxx）與特稿（3xxx 以上） */
+export const isFeature = (aid: string): boolean =>
+  Number(aid.slice(-4)) >= FEATURE_SEQ;
 
 /**
  * 從 RSS 原始字串抽出前 max 則項目。
